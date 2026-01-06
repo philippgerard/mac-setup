@@ -57,7 +57,6 @@
       "google-chrome"
 
       # Development
-      "cursor"
       "cyberduck"
       "figma"
       "ghostty"
@@ -72,9 +71,7 @@
 
       # Communication
       "beeper"
-      "microsoft-teams"
       "notion"
-      "slack"
       "zoom"
 
       # Microsoft Office

@@ -8,9 +8,9 @@
 
   # Work laptop-specific casks (in addition to shared ones)
   homebrew.casks = [
-    # Add work laptop-only apps here, e.g.:
-    # "microsoft-teams"
-    # "citrix-workspace"
+    "cursor"
+    "microsoft-teams"
+    "slack"
   ];
 
   # Laptop-specific system settings
