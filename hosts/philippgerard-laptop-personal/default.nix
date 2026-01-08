@@ -8,7 +8,8 @@
 
   # Laptop-specific casks (in addition to shared ones)
   homebrew.casks = [
-    # Add personal laptop-only apps here
+    "nvidia-geforce-now"
+    "steam"
   ];
 
   # Laptop-specific system settings

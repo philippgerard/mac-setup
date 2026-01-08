@@ -8,9 +8,8 @@
 
   # Desktop-specific casks (in addition to shared ones)
   homebrew.casks = [
-    # Add personal desktop-only apps here, e.g.:
-    # "steam"
-    # "nvidia-geforce-now"
+    "nvidia-geforce-now"
+    "steam"
   ];
 
   # Desktop-specific system settings

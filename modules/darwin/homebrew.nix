@@ -53,6 +53,9 @@
       "1password-cli"
       "raycast"
 
+      # Fonts
+      "font-fira-code-nerd-font"
+
       # Browsers
       "google-chrome"
 
@@ -83,13 +86,16 @@
       "appcleaner"
       "choosy"
       "jordanbaird-ice"
+      "kap"
       "latest"
+      "netnewswire"
       "replacicon"
       "shottr"
       "spamsieve"
+      "timemachinestatus"
 
-      # Gaming
-      "nvidia-geforce-now"
+      # Hardware
+      "monitorcontrol"
 
       # Media
       "spotify"
