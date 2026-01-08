@@ -19,5 +19,12 @@
       # Example: larger icons on external monitor
       # tilesize = 64;
     };
+
+    # Hide WiFi from menu bar on desktops (wired connection)
+    CustomUserPreferences = {
+      "com.apple.controlcenter" = {
+        "NSStatusItem Visible WiFi" = false;
+      };
+    };
   };
 }

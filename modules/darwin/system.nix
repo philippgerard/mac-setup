@@ -9,25 +9,17 @@
       autohide-delay = 0.0;
       autohide-time-modifier = 0.2;
       expose-animation-duration = 0.2;
-      tilesize = 48;
-      launchanim = false;
+      tilesize = 52;
       static-only = false;
       show-recents = false;
       show-process-indicators = true;
       orientation = "bottom";
-      mru-spaces = false;
     };
 
     # Finder settings
     finder = {
-      AppleShowAllExtensions = true;
-      AppleShowAllFiles = true;
-      ShowPathbar = true;
-      ShowStatusBar = true;
-      FXDefaultSearchScope = "SCcf"; # Search current folder
-      FXEnableExtensionChangeWarning = false;
+      AppleShowAllFiles = false;
       FXPreferredViewStyle = "Nlsv"; # List view
-      _FXShowPosixPathInTitle = true;
     };
 
     # Global settings
@@ -60,7 +52,7 @@
     # Trackpad
     trackpad = {
       Clicking = true;
-      TrackpadThreeFingerDrag = true;
+      TrackpadThreeFingerDrag = false;
     };
 
     # Login window
@@ -77,8 +69,7 @@
 
     # Menu bar
     menuExtraClock = {
-      Show24Hour = true;
-      ShowDate = 1;
+      ShowDate = 2;
       ShowDayOfWeek = true;
     };
 
@@ -95,6 +86,10 @@
       NSGlobalDomain = {
         NSNavPanelExpandedStateForSaveMode = true;
         NSNavPanelExpandedStateForSaveMode2 = true;
+      };
+      # Hide system clock from menu bar (using Dato instead)
+      "com.apple.controlcenter" = {
+        "NSStatusItem Visible Clock" = false;
       };
     };
   };
