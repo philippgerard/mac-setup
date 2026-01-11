@@ -50,16 +50,16 @@ The setup script will:
 ### Applications (Homebrew Casks)
 - 1Password & CLI
 - Raycast
-- Development: Cursor, Zed, Ghostty, OrbStack, TablePlus, Tower
-- Communication: Slack, Zoom, Teams, Beeper, Notion
-- Utilities: AdGuard, Ice, Shottr, AppCleaner
+- Development: Zed, Ghostty, OrbStack, TablePlus, Tower, Figma
+- Communication: Zoom, Beeper, Notion (+ Slack, Teams, Cursor on work machines)
+- Utilities: AdGuard, Ice, Shottr, AppCleaner, Choosy
 - And more...
 
 ### Mac App Store (mas)
 - 1Password for Safari
-- Kagi for Safari
+- Kagi for Safari, StopTheMadness Pro
 - Dato, Lungo, Command X
-- Little Snitch Mini
+- Little Snitch Mini, Battery Indicator
 - And more...
 
 ## Directory Structure
@@ -67,7 +67,6 @@ The setup script will:
 ```
 mac-setup/
 ├── flake.nix                # Entry point
-├── flake.lock               # Locked dependencies
 ├── setup.sh                 # Bootstrap script
 ├── hosts/
 │   ├── philippgerard-desktop-personal/
