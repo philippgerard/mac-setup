@@ -127,9 +127,10 @@
       end
 
       # Ghostty shell integration
-      if set -q GHOSTTY_RESOURCES_DIR
-          source "$GHOSTTY_RESOURCES_DIR/shell-integration/fish/vendor_conf.d/ghostty-shell-integration.fish"
-      end
+      # Disabled: causes TUI apps (topgrade, etc.) to get stuck or lose completion messages
+      # if set -q GHOSTTY_RESOURCES_DIR
+      #     source "$GHOSTTY_RESOURCES_DIR/shell-integration/fish/vendor_conf.d/ghostty-shell-integration.fish"
+      # end
     '';
 
     # Custom functions

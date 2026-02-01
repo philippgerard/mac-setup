@@ -14,12 +14,16 @@
 
     # Homebrew taps
     taps = [
+      "anomalyco/tap"
       "homebrew/services"
+      "sinelaw/fresh"
     ];
 
     # CLI tools from Homebrew (when not available in nixpkgs or need Homebrew integration)
     brews = [
+      "fresh-editor" # Terminal text editor with IDE features
       "mas" # Mac App Store CLI (required for masApps)
+      "opencode" # AI coding agent
 
       # Ruby (chruby + ruby-install for version management)
       # "chruby"
