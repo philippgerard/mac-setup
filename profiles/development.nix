@@ -5,7 +5,6 @@
     "aqua-voice"
     "chatgpt"
     "claude"
-    "cmux"
     "codex"
     "conductor"
     "orbstack"

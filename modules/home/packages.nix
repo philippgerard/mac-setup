@@ -18,7 +18,6 @@
     # Development
     claude-code
     biome
-    cocoapods
     fastlane
     ffmpeg
     gh
