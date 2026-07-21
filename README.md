@@ -36,12 +36,15 @@ The `mini` host composes all currently selected profiles. Homebrew cleanup, auto
 
 ## Fresh-machine bootstrap
 
-The bootstrap defaults to build-only. Use a tested tag or commit when possible:
+The bootstrap defaults to build-only. Use the full SHA of a tested commit rather than a moving branch. This runbook currently targets the configuration tested at `97e8936d373db822429037a583b4e2fc49d5a5ef`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/philippgerard/mac-setup/main/setup.sh \
-  | bash -s -- --revision main
+revision='97e8936d373db822429037a583b4e2fc49d5a5ef'
+curl -fsSL "https://raw.githubusercontent.com/philippgerard/mac-setup/${revision}/setup.sh" \
+  | bash -s -- --revision "$revision"
 ```
+
+The SHA selects both the downloaded bootstrap script and the repository revision it checks out. If macOS opens the Command Line Tools installer, complete it and then rerun the same block; `setup.sh` intentionally exits after requesting the tools.
 
 The script:
 
@@ -120,6 +123,88 @@ scripts/restore-filen-menubar-from-1password
 ```
 
 The generated `syncPairs.json` is derived from that config and does not need a separate backup. The Filen CLI session is also excluded; run `filen` once to authenticate after each clean install.
+
+## Ordered restore verification
+
+Run these checks after `setup.sh --apply`, 1Password sign-in, Git identity configuration, GPG restore, Filen Menubar config restore, and Filen CLI authentication. Start `/bin/bash`, then paste the complete block; the parentheses keep a failed check from closing the parent shell.
+
+```bash
+(
+  set -euo pipefail
+
+  expected_revision='97e8936d373db822429037a583b4e2fc49d5a5ef'
+  cd "$HOME/.config/mac-setup"
+
+  if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
+    source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+  fi
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  fi
+
+  # 1. Confirm the immutable checkout and public repository safety.
+  test "$(git rev-parse HEAD)" = "$expected_revision"
+  test -z "$(git status --porcelain)"
+  scripts/validate
+  scripts/check-history-safety HEAD
+
+  # 2. Prove the configuration builds repeatedly and the package inventory is present.
+  scripts/rebuild build
+  scripts/rebuild build
+  scripts/homebrew-dry-run
+  brew list --versions mole
+  mo --version
+
+  # 3. Verify 1Password, SSH access, private files, and signed Git commits.
+  export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+  op account get >/dev/null
+  ssh-add -L >/dev/null
+  git ls-remote https://github.com/philippgerard/mac-setup.git HEAD >/dev/null
+
+  for identity_file in identity.inc public-identity.inc allowed_signers; do
+    identity_path="$HOME/.config/git/$identity_file"
+    test -s "$identity_path"
+    test "$(stat -f '%Lp' "$identity_path")" = 600
+  done
+  git config --get user.email | grep -q '@users\.noreply\.github\.com$'
+  test -n "$(git config --get user.signingKey)"
+
+  signing_test_repo="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-signing.XXXXXX")"
+  git -C "$signing_test_repo" init -q
+  git -C "$signing_test_repo" commit --allow-empty -S -m 'SSH signing verification' >/dev/null
+  git -C "$signing_test_repo" verify-commit HEAD
+
+  # 4. Verify the restored legacy GPG material.
+  gpg --list-secret-keys --with-colons | grep -q '^sec:'
+  gpg --list-secret-keys --keyid-format long
+  gpgconf --list-dirs agent-socket >/dev/null
+
+  # 5. Verify Filen, its isolated Node runtime, and login agent.
+  filen_config="$HOME/Library/Application Support/filen-menubar/config.json"
+  test -s "$filen_config"
+  test "$(stat -f '%Lp' "$filen_config")" = 600
+  filen --version | grep -q 'v0\.0\.39'
+  fnm exec --using 24.18.0 node --version | grep -q '^v24\.18\.0$'
+  fnm exec --using 24.18.0 corepack --version >/dev/null
+  test -d "$HOME/Applications/Home Manager Apps/Filen Menubar.app"
+  launchctl print "gui/$(id -u)/org.nix-community.home.filen-menubar" >/dev/null
+
+  # 6. Exercise the remaining command-line entry points.
+  fnm --version
+  pnpm --version
+  gh --version
+  gh auth status
+  codex --version
+  claude --version
+  tmux -V
+  ssh -V
+
+  printf 'Automated restore verification passed.\n'
+  printf 'The disposable signing-test repository is at %s\n' "$signing_test_repo"
+)
+```
+
+Finally verify Filen is syncing the intended paths, representative repositories build, browser and application sync has completed, and required macOS privacy permissions are granted. Project Node versions remain project-selected through `fnm`; no system Node package is installed.
 
 ## Normal operation
 
