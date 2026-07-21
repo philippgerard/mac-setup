@@ -37,7 +37,7 @@ Review Full Disk Access, Accessibility, Input Monitoring, Screen Recording, micr
 
 - `git commit -S` succeeds and reports an SSH signature.
 - Git name and email come from the private include.
-- `fnm`, `gh`, `codex`, `claude`, `tmux`, `gpg`, and `ssh` start.
+- `fnm`, `gh`, `codex`, `claude`, `tmux`, `gpg`, `ssh`, and Mole's `mo` command start.
 - `filen --version` reports the pinned CLI and Filen Menubar starts at login.
 - After restoring the project-selected Node version through `fnm`, `node`, `corepack`, and `pnpm` start.
 - Otty handles shell scripts and SSH URLs; Zed handles Markdown.

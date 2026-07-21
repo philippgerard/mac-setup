@@ -25,6 +25,7 @@
 
     brews = [
       "mas"
+      "mole"
       "getsentry/xcodebuildmcp/xcodebuildmcp"
       "shebe-oss/tap/shebe"
     ];
