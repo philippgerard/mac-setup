@@ -1,0 +1,38 @@
+{ ... }:
+
+{
+  xdg.configFile."otty/config.toml".text = ''
+    theme = "Paper"
+    theme-dark = "Nord"
+
+    foreground = "#1a1a1a"
+    background = "#fcfbf9"
+    palette-0 = "#1a1a1a"
+    palette-1 = "#a33a3a"
+    palette-2 = "#2b5a38"
+    palette-3 = "#a85a20"
+    palette-4 = "#4a7a8a"
+    palette-5 = "#4a3a6a"
+    palette-6 = "#3a7a6a"
+    palette-7 = "#c1beb5"
+    palette-8 = "#8c8a80"
+    palette-9 = "#c36a6a"
+    palette-10 = "#6b9a78"
+    palette-11 = "#c88a50"
+    palette-12 = "#7a9aaa"
+    palette-13 = "#8a7a9a"
+    palette-14 = "#6abaaa"
+    palette-15 = "#ebebe6"
+
+    on-launch = "new_window"
+    details-panel-width = 250
+    privilege-caffeinate-agent-processing = true
+    dock-icon-animate-progress = true
+    font-size = 14
+    sidebar-width = 253
+    copy-on-select = true
+    clipboard-trim-trailing-spaces = true
+    text-blink = true
+    cursor-style = "bar"
+  '';
+}

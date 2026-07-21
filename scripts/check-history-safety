@@ -1,0 +1,40 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+TARGET="${1:---all}"
+if [[ "$TARGET" == "--all" ]]; then
+  revision_args=(--all)
+else
+  git rev-parse --verify "$TARGET^{commit}" >/dev/null
+  revision_args=("$TARGET")
+fi
+
+non_noreply_emails="$(git log "${revision_args[@]}" --format='%ae' | sort -u | grep -vc '@users.noreply.github.com' || true)"
+historical_identity_hits="$({
+  git rev-list "${revision_args[@]}" |
+    while read -r commit; do
+      git grep -Il -E \
+        'user(Name|Email)[[:space:]]*=|user\.signingKey[[:space:]]*=|(ssh-ed25519|ssh-rsa)[[:space:]]+[A-Za-z0-9+/=]{20,}' \
+        "$commit" -- '*.nix' '*.md' '*.sh' 2>/dev/null || true
+    done |
+    sort -u |
+    wc -l |
+    tr -d '[:space:]'
+})"
+
+if [[ "$non_noreply_emails" -ne 0 || "$historical_identity_hits" -ne 0 ]]; then
+  cat >&2 <<EOF
+history-safety scan failed
+  non-noreply author identities: $non_noreply_emails
+  historical identity/key file hits: $historical_identity_hits
+
+Publish from a sanitized root commit or rewrite the public history after review.
+EOF
+  exit 1
+fi
+
+echo "history-safety scan passed"

@@ -1,0 +1,46 @@
+#!/bin/bash
+
+set -euo pipefail
+
+NODE_VERSION="${MAC_SETUP_FILEN_NODE_VERSION:-24.18.0}"
+FILEN_CLI_VERSION="${MAC_SETUP_FILEN_CLI_VERSION:-0.0.39}"
+
+find_fnm() {
+  local candidate
+
+  if command -v fnm >/dev/null 2>&1; then
+    command -v fnm
+    return
+  fi
+
+  for candidate in \
+    "$HOME/.nix-profile/bin/fnm" \
+    "/etc/profiles/per-user/$(id -un)/bin/fnm"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  return 1
+}
+
+FNM_BIN="$(find_fnm)" || {
+  echo "fnm is unavailable; activate the Nix configuration before installing Filen CLI" >&2
+  exit 1
+}
+
+"$FNM_BIN" install --corepack-enabled "$NODE_VERSION"
+# Filen CLI declares the EOL Node 23 line. It is runtime-tested here on a
+# supported LTS without changing the user's fnm default for other projects.
+"$FNM_BIN" exec --using "$NODE_VERSION" \
+  npm install --global --no-audit --no-fund "@filen/cli@$FILEN_CLI_VERSION"
+
+installed_version="$("$FNM_BIN" exec --using "$NODE_VERSION" filen --version 2>/dev/null)"
+if [[ "$installed_version" != *"v$FILEN_CLI_VERSION"* ]]; then
+  echo "Filen CLI installation could not be verified" >&2
+  exit 1
+fi
+
+echo "Filen CLI $FILEN_CLI_VERSION is installed under fnm Node $NODE_VERSION."
+echo "Run 'filen' once in a terminal to authenticate on a fresh Mac."

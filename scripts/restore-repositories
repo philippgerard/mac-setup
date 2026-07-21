@@ -1,0 +1,45 @@
+#!/bin/bash
+
+set -euo pipefail
+
+MANIFEST="${1:-}"
+BASE_DIR="${MAC_SETUP_REPOSITORY_ROOT:-$HOME}"
+
+[[ -n "$MANIFEST" ]] || {
+  echo "usage: scripts/restore-repositories <manifest.tsv|->" >&2
+  exit 2
+}
+
+if [[ "$MANIFEST" == "-" ]]; then
+  input="/dev/stdin"
+else
+  [[ -f "$MANIFEST" ]] || { echo "manifest not found" >&2; exit 1; }
+  input="$MANIFEST"
+fi
+
+while IFS=$'\t' read -r relative_path remote_url remainder; do
+  [[ -n "$relative_path" ]] || continue
+  [[ "$relative_path" == \#* ]] && continue
+  [[ -z "${remainder:-}" ]] || { echo "invalid manifest row" >&2; exit 1; }
+  [[ "$relative_path" != /* && "$relative_path" != *".."* ]] || {
+    echo "repository path must be relative and may not contain '..'" >&2
+    exit 1
+  }
+  [[ "$remote_url" == https://* || "$remote_url" == ssh://* || "$remote_url" == git@* ]] || {
+    echo "unsupported repository URL" >&2
+    exit 1
+  }
+
+  destination="$BASE_DIR/$relative_path"
+  if [[ -e "$destination" ]]; then
+    if git -C "$destination" rev-parse --git-dir >/dev/null 2>&1; then
+      echo "exists, leaving unchanged: $relative_path"
+      continue
+    fi
+    echo "destination exists and is not a Git repository: $relative_path" >&2
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$destination")"
+  git clone -- "$remote_url" "$destination"
+done <"$input"

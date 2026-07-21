@@ -1,0 +1,28 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLAKE_REF="path:$REPO_ROOT"
+
+for command_name in nix brew; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+brewfile="$(mktemp "${TMPDIR:-/tmp}/mac-setup-brewfile.XXXXXX")"
+trap 'rm -f "$brewfile"' EXIT
+
+nix eval --raw "$FLAKE_REF#darwinConfigurations.mini.config.homebrew.brewfile" >"$brewfile"
+
+echo "Checking declared dependencies..."
+check_status=0
+HOMEBREW_NO_AUTO_UPDATE=1 brew bundle check --verbose --file="$brewfile" || check_status=$?
+
+echo
+echo "Showing undeclared installed software. Nothing will be removed."
+HOMEBREW_NO_AUTO_UPDATE=1 brew bundle cleanup --file="$brewfile"
+
+exit "$check_status"

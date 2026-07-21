@@ -1,0 +1,74 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+scan() {
+  rg -n --hidden \
+    --glob '!.git/**' \
+    --glob '!.local/**' \
+    --glob '!scripts/check-public-safety' \
+    "$1" . || true
+}
+
+scan_literal() {
+  rg -n -F --hidden \
+    --glob '!.git/**' \
+    --glob '!.local/**' \
+    --glob '!scripts/check-public-safety' \
+    -- "$1" . || true
+}
+
+failures=""
+
+email_matches="$({
+  scan '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' |
+    grep -v -E '(ssh://git@|git@github\.com:)' || true
+})"
+[[ -z "$email_matches" ]] || failures+=$'\nemail address:\n'"$email_matches"
+
+home_matches="$(scan '/Users/[A-Za-z0-9._-]+' | grep -v '/Users/macuser' || true)"
+[[ -z "$home_matches" ]] || failures+=$'\nabsolute home path:\n'"$home_matches"
+
+key_matches="$(scan '(ssh-(rsa|ed25519)|ecdsa-[^[:space:]]+)[[:space:]]+[A-Za-z0-9+/=]{20,}')"
+[[ -z "$key_matches" ]] || failures+=$'\nSSH public key:\n'"$key_matches"
+
+secret_matches="$(scan '(BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,})')"
+[[ -z "$secret_matches" ]] || failures+=$'\nsecret-like value:\n'"$secret_matches"
+
+identity_matches="$(scan '(userName[[:space:]]*=|userEmail[[:space:]]*=|user\.signingKey[[:space:]]*=)')"
+[[ -z "$identity_matches" ]] || failures+=$'\nembedded Git identity:\n'"$identity_matches"
+
+literal_failure=0
+check_local_literal() {
+  local literal="$1"
+  local content_matches
+  local path
+
+  [[ ${#literal} -ge 4 ]] || return 0
+
+  content_matches="$(scan_literal "$literal" |
+    grep -v -E '(github\.com/[^/]+/(mac-setup|filen-menubar)(\.git)?|raw\.githubusercontent\.com/[^/]+/mac-setup/)' || true)"
+  [[ -z "$content_matches" ]] || literal_failure=1
+
+  while IFS= read -r -d '' path; do
+    if [[ "$path" == *"$literal"* ]]; then
+      literal_failure=1
+    fi
+  done < <(find . -path './.git' -prune -o -path './.local' -prune -o -print0)
+}
+
+check_local_literal "$(id -un 2>/dev/null || true)"
+check_local_literal "$(basename "$HOME")"
+check_local_literal "$(git config --global --get user.name 2>/dev/null || true)"
+check_local_literal "$(git config --global --get user.email 2>/dev/null || true)"
+[[ "$literal_failure" -eq 0 ]] || failures+=$'\ncurrent-machine identity literal found outside the public repository locator'
+
+if [[ -n "$failures" ]]; then
+  printf 'Public-safety scan failed:%s\n' "$failures" >&2
+  exit 1
+fi
+
+echo "public-safety scan passed"

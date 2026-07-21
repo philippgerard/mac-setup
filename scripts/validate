@@ -1,0 +1,44 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+for script in setup.sh scripts/*; do
+  [[ -f "$script" ]] || continue
+  bash -n "$script"
+done
+
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck setup.sh scripts/*
+fi
+
+bash "$REPO_ROOT/scripts/check-public-safety"
+
+[[ -f flake.lock ]] || {
+  echo "flake.lock is required" >&2
+  exit 1
+}
+
+python3 - <<'PY'
+from pathlib import Path
+import tomllib
+
+source = Path("modules/home/topgrade.nix").read_text()
+marker = 'home.file.".config/topgrade.toml".text = \'\''
+start = source.index(marker) + len(marker)
+end = source.index("'';", start)
+tomllib.loads(source[start:end])
+print("topgrade TOML passed")
+PY
+
+command -v nix >/dev/null 2>&1 || {
+  echo "nix is required for complete validation" >&2
+  exit 1
+}
+
+nix flake check --no-build "path:$REPO_ROOT"
+nix eval "path:$REPO_ROOT#darwinConfigurations.mini.system.drvPath" >/dev/null
+
+echo "local validation passed"

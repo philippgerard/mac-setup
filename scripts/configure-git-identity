@@ -1,0 +1,92 @@
+#!/bin/bash
+
+set -euo pipefail
+
+IDENTITY_ITEM="${MAC_SETUP_GIT_IDENTITY_ITEM:-Mac Setup Git Identity}"
+IDENTITY_REF="${MAC_SETUP_GIT_IDENTITY_REF:-}"
+VAULT="${MAC_SETUP_1PASSWORD_VAULT:-}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+GIT_PRIVATE_DIR="$CONFIG_HOME/git"
+IDENTITY_FILE="$GIT_PRIVATE_DIR/identity.inc"
+PUBLIC_IDENTITY_FILE="$GIT_PRIVATE_DIR/public-identity.inc"
+ALLOWED_SIGNERS_FILE="$GIT_PRIVATE_DIR/allowed_signers"
+
+for command_name in op git jq mktemp; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+op account get --format json >/dev/null 2>&1 || {
+  echo "sign in to 1Password CLI before configuring Git identity" >&2
+  exit 1
+}
+
+if [[ -n "$IDENTITY_REF" ]]; then
+  git_name="$(op read "$IDENTITY_REF/name")"
+  git_email="$(op read "$IDENTITY_REF/email")"
+  git_signing_key="$(op read "$IDENTITY_REF/signing_key")"
+  public_name="$(op read "$IDENTITY_REF/public_name")"
+  public_email="$(op read "$IDENTITY_REF/public_email")"
+  public_signing_key="$(op read "$IDENTITY_REF/public_signing_key")"
+else
+  if [[ -n "$VAULT" ]]; then
+    identity_json="$(op item get "$IDENTITY_ITEM" --vault "$VAULT" --format json)"
+  else
+    identity_json="$(op item get "$IDENTITY_ITEM" --format json)"
+  fi
+  field_value() {
+    jq -er --arg label "$1" '.fields[] | select(.label == $label) | .value' <<<"$identity_json"
+  }
+
+  git_name="$(field_value name)"
+  git_email="$(field_value email)"
+  git_signing_key="$(field_value signing_key)"
+  public_name="$(field_value public_name)"
+  public_email="$(field_value public_email)"
+  public_signing_key="$(field_value public_signing_key)"
+fi
+
+[[ -n "$git_name" && "$git_name" != *$'\n'* ]] || { echo "invalid name field" >&2; exit 1; }
+[[ "$git_email" == *@* && "$git_email" != *$'\n'* ]] || { echo "invalid email field" >&2; exit 1; }
+[[ "$git_signing_key" =~ ^(ssh-|ecdsa-)[^[:space:]]+[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || {
+  echo "signing_key must contain a complete SSH public key" >&2
+  exit 1
+}
+[[ -n "$public_name" && "$public_name" != *$'\n'* ]] || { echo "invalid public_name field" >&2; exit 1; }
+[[ "$public_email" == *@users.noreply.github.com && "$public_email" != *$'\n'* ]] || {
+  echo "public_email must be a GitHub noreply address" >&2
+  exit 1
+}
+[[ "$public_signing_key" =~ ^(ssh-|ecdsa-)[^[:space:]]+[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || {
+  echo "public_signing_key must contain a complete SSH public key" >&2
+  exit 1
+}
+
+install -d -m 700 "$GIT_PRIVATE_DIR"
+umask 077
+identity_tmp="$(mktemp "$GIT_PRIVATE_DIR/.identity.XXXXXX")"
+public_identity_tmp="$(mktemp "$GIT_PRIVATE_DIR/.public-identity.XXXXXX")"
+signers_tmp="$(mktemp "$GIT_PRIVATE_DIR/.signers.XXXXXX")"
+trap 'rm -f "$identity_tmp" "$public_identity_tmp" "$signers_tmp"' EXIT
+
+git config --file "$identity_tmp" user.name "$git_name"
+git config --file "$identity_tmp" user.email "$git_email"
+git config --file "$identity_tmp" user.signingKey "$git_signing_key"
+git config --file "$public_identity_tmp" user.name "$public_name"
+git config --file "$public_identity_tmp" user.email "$public_email"
+git config --file "$public_identity_tmp" user.signingKey "$public_signing_key"
+{
+  printf '%s %s\n' "$git_email" "$git_signing_key"
+  printf '%s %s\n' "$public_email" "$public_signing_key"
+} >"$signers_tmp"
+
+chmod 600 "$identity_tmp" "$public_identity_tmp" "$signers_tmp"
+mv "$identity_tmp" "$IDENTITY_FILE"
+mv "$public_identity_tmp" "$PUBLIC_IDENTITY_FILE"
+mv "$signers_tmp" "$ALLOWED_SIGNERS_FILE"
+trap - EXIT
+
+echo "Private and public-repository Git identities were written to local files."
+echo "Test with a signed commit after enabling the 1Password SSH agent."

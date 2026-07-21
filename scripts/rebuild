@@ -1,0 +1,33 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOCAL_CONFIG_JSON="$REPO_ROOT/.local/config.json"
+LOCAL_CONFIG_NIX="$REPO_ROOT/.local/config.nix"
+FLAKE_REF="path:$REPO_ROOT"
+MODE="${1:-build}"
+
+[[ -f "$LOCAL_CONFIG_JSON" || -f "$LOCAL_CONFIG_NIX" ]] || {
+  echo "missing private local host metadata; run setup.sh first" >&2
+  exit 1
+}
+
+command -v nix >/dev/null 2>&1 || {
+  echo "nix is not available on PATH" >&2
+  exit 1
+}
+
+case "$MODE" in
+  build)
+    nix build "$FLAKE_REF#darwinConfigurations.mini.system"
+    ;;
+  switch)
+    nix build "$FLAKE_REF#darwinConfigurations.mini.system"
+    sudo nix run "$FLAKE_REF#darwin-rebuild" -- switch --flake "$FLAKE_REF#mini"
+    ;;
+  *)
+    echo "usage: scripts/rebuild [build|switch]" >&2
+    exit 2
+    ;;
+esac

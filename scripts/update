@@ -1,0 +1,16 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+command -v nix >/dev/null 2>&1 || {
+  echo "nix is not available on PATH" >&2
+  exit 1
+}
+
+nix flake update "path:$REPO_ROOT"
+"$REPO_ROOT/scripts/validate"
+"$REPO_ROOT/scripts/rebuild" build
+
+echo "Dependencies and the lock file were updated; review and commit the diff before switching."
