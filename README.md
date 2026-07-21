@@ -36,10 +36,10 @@ The `mini` host composes all currently selected profiles. Homebrew cleanup, auto
 
 ## Fresh-machine bootstrap
 
-The bootstrap defaults to build-only. Use the full SHA of a tested commit rather than a moving branch. This runbook currently targets the configuration tested at `97e8936d373db822429037a583b4e2fc49d5a5ef`:
+The bootstrap defaults to build-only. Use the full SHA of a tested commit rather than a moving branch. This runbook currently targets the configuration tested at `42d0a1e9dcb10549d5c2dd4b9ad4d35023d99084`:
 
 ```bash
-revision='97e8936d373db822429037a583b4e2fc49d5a5ef'
+revision='42d0a1e9dcb10549d5c2dd4b9ad4d35023d99084'
 curl -fsSL "https://raw.githubusercontent.com/philippgerard/mac-setup/${revision}/setup.sh" \
   | bash -s -- --revision "$revision"
 ```
@@ -142,7 +142,7 @@ Run these checks after `setup.sh --apply`, 1Password sign-in, Git identity confi
 (
   set -euo pipefail
 
-  expected_revision='97e8936d373db822429037a583b4e2fc49d5a5ef'
+  expected_revision='42d0a1e9dcb10549d5c2dd4b9ad4d35023d99084'
   cd "$HOME/.config/mac-setup"
 
   if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
