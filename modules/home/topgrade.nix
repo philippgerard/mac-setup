@@ -1,9 +1,7 @@
-{ config, pkgs, ... }:
+{ ... }:
 
-{
-  # Topgrade configuration
-  # Config file location: ~/.config/topgrade.toml
-  home.file.".config/topgrade.toml".text = ''
+let
+  topgradeConfig = ''
     # Don't ask for confirmation
     [misc]
     assume_yes = true
@@ -40,4 +38,10 @@
     [firmware]
     upgrade = false  # Set to true to include firmware updates
   '';
+in
+assert builtins.isAttrs (builtins.fromTOML topgradeConfig);
+{
+  # Topgrade configuration
+  # Config file location: ~/.config/topgrade.toml
+  home.file.".config/topgrade.toml".text = topgradeConfig;
 }

@@ -40,6 +40,7 @@
             home-manager.darwinModules.home-manager
             {
               home-manager = {
+                backupFileExtension = "before-home-manager";
                 useGlobalPkgs = true;
                 useUserPackages = true;
                 extraSpecialArgs = { inherit inputs localConfig; };

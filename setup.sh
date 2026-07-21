@@ -126,11 +126,13 @@ fi
 cat <<EOF
 
 Private post-activation steps:
-  1. Sign in to 1Password and enable its CLI and SSH agent.
-  2. Run: $CONFIG_DIR/scripts/configure-git-identity
-  3. Restore Filen Menubar config: $CONFIG_DIR/scripts/restore-filen-menubar-from-1password
-  4. Run 'filen' once to authenticate the CLI, then reopen Filen Menubar.
-  5. Restore legacy GPG keys with: $CONFIG_DIR/scripts/restore-gpg-from-1password
+  1. Open a new terminal so the activated Nix profile is on PATH.
+  2. Sign in to 1Password and enable its CLI and SSH agent.
+  3. Review any *.before-home-manager backups; move private SSH hosts below \$HOME/.ssh/config.d/.
+  4. Run: $CONFIG_DIR/scripts/configure-git-identity
+  5. Restore Filen Menubar config: $CONFIG_DIR/scripts/restore-filen-menubar-from-1password
+  6. Run 'filen' once to authenticate the CLI, then run: open "\$HOME/Applications/Home Manager Apps/Filen Menubar.app"
+  7. Restore legacy GPG keys with: $CONFIG_DIR/scripts/restore-gpg-from-1password
 
 No name, email address, signing key, or private host configuration is stored in Git.
 EOF

@@ -23,7 +23,7 @@ Container volumes on the old Mac are intentionally disposable and are not a wipe
 6. Run `scripts/configure-git-identity` and make a signed test commit.
 7. Run `scripts/restore-gpg-from-1password` and verify fingerprints.
 8. Run `scripts/restore-filen-menubar-from-1password`.
-9. Run `filen` once to authenticate, then reopen Filen Menubar and verify sync.
+9. Run `filen` once to authenticate, then run `open "$HOME/Applications/Home Manager Apps/Filen Menubar.app"` and verify sync.
 10. Sign into the App Store, browser, other sync providers, and licensed applications.
 11. Restore private SSH host files and the private repository manifest.
 12. Restore or clone user data from its authoritative remote source.
@@ -39,7 +39,9 @@ Review Full Disk Access, Accessibility, Input Monitoring, Screen Recording, micr
 - Git name and email come from the private include.
 - `fnm`, `gh`, `codex`, `claude`, `tmux`, `gpg`, `ssh`, and Mole's `mo` command start.
 - `filen --version` reports the pinned CLI and Filen Menubar starts at login.
+- `dscl . -read "/Users/$(id -un)" UserShell` reports `/run/current-system/sw/bin/fish`.
 - After restoring the project-selected Node version through `fnm`, `node`, `corepack`, and `pnpm` start.
+- `xcodebuild -checkFirstLaunchStatus` succeeds and an Intel executable can run through Rosetta.
 - Otty handles shell scripts and SSH URLs; Zed handles Markdown.
 - 1Password, browser sync, Filen Menubar sync, and App Store installs have completed.
 - Representative personal and work repositories build successfully.

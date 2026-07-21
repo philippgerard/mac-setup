@@ -55,6 +55,15 @@ The script:
 5. runs public-safety and syntax checks;
 6. builds `darwinConfigurations.mini.system` without activating it.
 
+Before Homebrew runs, activation completes Xcode's required first-launch setup
+when Xcode is present, including license acceptance. On Apple Silicon it also
+installs Rosetta 2 when absent, which is required by Intel-only vendor packages
+such as SecureSafe. These apply-time prerequisites do not run during a build.
+
+Home Manager preserves a pre-existing file that it needs to manage by appending
+`.before-home-manager` rather than overwriting it. Activation fails safely if
+that backup path already exists, so backups are never replaced implicitly.
+
 After reviewing the result, activate explicitly:
 
 ```bash
@@ -108,7 +117,7 @@ See [docs/private-state.md](docs/private-state.md) for the complete boundary and
 
 ## Filen Menubar
 
-The Apple Silicon app bundle is installed from a checksum-pinned GitHub release and starts at user login. Its Filen CLI dependency is isolated behind an `fnm` launcher using pinned Node 24 LTS during `setup.sh --apply`; no system Node package is used and the user's default Node version is left alone.
+The Apple Silicon app bundle is installed from a checksum-pinned GitHub release and starts at user login. Home Manager copies a real, Spotlight-searchable bundle to `~/Applications/Home Manager Apps/Filen Menubar.app`. Its Filen CLI dependency is isolated behind an `fnm` launcher using pinned Node 24 LTS during `setup.sh --apply`; no system Node package is used and the user's default Node version is left alone.
 
 The live config contains private local and remote sync paths, so it is never stored in Git. Back it up from the old Mac and verify the 1Password document with:
 
@@ -120,6 +129,7 @@ After signing in to 1Password on a new Mac, restore it with:
 
 ```bash
 scripts/restore-filen-menubar-from-1password
+open "$HOME/Applications/Home Manager Apps/Filen Menubar.app"
 ```
 
 The generated `syncPairs.json` is derived from that config and does not need a separate backup. The Filen CLI session is also excluded; run `filen` once to authenticate after each clean install.
@@ -187,6 +197,7 @@ Run these checks after `setup.sh --apply`, 1Password sign-in, Git identity confi
   fnm exec --using 24.18.0 node --version | grep -q '^v24\.18\.0$'
   fnm exec --using 24.18.0 corepack --version >/dev/null
   test -d "$HOME/Applications/Home Manager Apps/Filen Menubar.app"
+  test ! -L "$HOME/Applications/Home Manager Apps/Filen Menubar.app"
   launchctl print "gui/$(id -u)/org.nix-community.home.filen-menubar" >/dev/null
 
   # 6. Exercise the remaining command-line entry points.
@@ -198,6 +209,7 @@ Run these checks after `setup.sh --apply`, 1Password sign-in, Git identity confi
   claude --version
   tmux -V
   ssh -V
+  test "$(dscl . -read "/Users/$(id -un)" UserShell)" = 'UserShell: /run/current-system/sw/bin/fish'
 
   printf 'Automated restore verification passed.\n'
   printf 'The disposable signing-test repository is at %s\n' "$signing_test_repo"

@@ -50,8 +50,9 @@ in
     executable = true;
   };
 
-  # Keep the bundle discoverable in Finder as ~/Applications/Home Manager Apps.
-  targets.darwin.linkApps.enable = true;
+  # Copy a real bundle so Spotlight can find it after the menu-bar app quits.
+  targets.darwin.linkApps.enable = false;
+  targets.darwin.copyApps.enable = true;
 
   # A successful exit means the user intentionally quit the app; only crashes restart.
   launchd.agents.filen-menubar = {

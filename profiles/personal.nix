@@ -17,7 +17,6 @@
     "Infuse" = 1136220934;
     "Keka" = 470158793;
     "Kindle" = 302584613;
-    "Lieferungen" = 290986013;
     "Paperparrot" = 1663665267;
     "PDFScanner" = 410968114;
     "Remind Me Faster" = 985555908;

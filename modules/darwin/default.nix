@@ -2,8 +2,11 @@
 
 {
   imports = [
+    ./fish.nix
     ./nix.nix
+    ./rosetta.nix
     ./system.nix
+    ./xcode.nix
     ./homebrew.nix
   ];
 
@@ -12,13 +15,6 @@
 
   # Allow unfree packages
   nixpkgs.config.allowUnfree = true;
-
-  # Set fish as the default shell
-  programs.fish.enable = true;
-  users.users.${localConfig.username} = {
-    home = localConfig.homeDirectory;
-    shell = pkgs.fish;
-  };
 
   # System packages available to all users
   environment.systemPackages = with pkgs; [

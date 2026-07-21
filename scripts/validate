@@ -21,18 +21,6 @@ bash "$REPO_ROOT/scripts/check-public-safety"
   exit 1
 }
 
-python3 - <<'PY'
-from pathlib import Path
-import tomllib
-
-source = Path("modules/home/topgrade.nix").read_text()
-marker = 'home.file.".config/topgrade.toml".text = \'\''
-start = source.index(marker) + len(marker)
-end = source.index("'';", start)
-tomllib.loads(source[start:end])
-print("topgrade TOML passed")
-PY
-
 command -v nix >/dev/null 2>&1 || {
   echo "nix is required for complete validation" >&2
   exit 1

@@ -66,6 +66,10 @@ The manifest describes where state lives; it must not be copied into this reposi
 
 The public SSH config owns only the 1Password agent and safe connection defaults. Restore private host entries into `~/.ssh/config.d/`. Avoid putting private hostnames or identity-file paths in the public module.
 
+On first activation, an existing `~/.ssh/config` is preserved as
+`~/.ssh/config.before-home-manager`. Review that backup and move any private
+host blocks into separate files below `~/.ssh/config.d/`.
+
 ## Application credentials
 
 Do not copy live Zed, AI-agent, browser, or package-manager settings wholesale. Live files can contain access tokens even when most of the file is harmless. Public modules contain only explicitly selected non-secret settings; credentials are restored through 1Password or the application's supported sign-in flow.

@@ -24,7 +24,7 @@ case "$MODE" in
     ;;
   switch)
     nix build "$FLAKE_REF#darwinConfigurations.mini.system"
-    sudo nix run "$FLAKE_REF#darwin-rebuild" -- switch --flake "$FLAKE_REF#mini"
+    sudo -H nix run "$FLAKE_REF#darwin-rebuild" -- switch --flake "$FLAKE_REF#mini"
     ;;
   *)
     echo "usage: scripts/rebuild [build|switch]" >&2

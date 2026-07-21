@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+export PATH
+
 IDENTITY_ITEM="${MAC_SETUP_GIT_IDENTITY_ITEM:-Mac Setup Git Identity}"
 IDENTITY_REF="${MAC_SETUP_GIT_IDENTITY_REF:-}"
 VAULT="${MAC_SETUP_1PASSWORD_VAULT:-}"

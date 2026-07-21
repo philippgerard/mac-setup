@@ -3,8 +3,11 @@
 {
   homebrew.casks = [
     "microsoft-auto-update"
-    "microsoft-office"
+    "microsoft-excel"
+    "microsoft-outlook"
+    "microsoft-powerpoint"
     "microsoft-teams"
+    "microsoft-word"
     "notion"
     "slack"
   ];

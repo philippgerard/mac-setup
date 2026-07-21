@@ -6,7 +6,6 @@
     "chatgpt"
     "claude"
     "codex"
-    "conductor"
     "orbstack"
     "tableplus"
     "zed"

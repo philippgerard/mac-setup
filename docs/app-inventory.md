@@ -8,17 +8,23 @@ The `mini` host composes:
 - `development`: editor, AI tools, Xcode/TestFlight, OrbStack, and database tooling;
 - `desktop`: external-display support and desktop menu-bar behavior;
 - `personal`: communication, news, media, archive, and document utilities;
-- `work`: Office, Teams, Slack, and Notion;
+- `work`: individual Microsoft Office apps, Teams, Slack, and Notion;
 - `gaming`: GeForce NOW.
 
 The package lists intentionally replace Ghostty with Otty, Ice with Barbee, Latest with Updatest, and the old Tailscale token with `tailscale-app`.
 
 Filen Menubar is the explicit exception to the Homebrew-first GUI policy: its Apple Silicon DMG is checksum-pinned in Nix because no stable cask exists. Its Node-based Filen CLI is isolated under a pinned `fnm` LTS runtime without changing the user's default Node, and its private sync paths restore from 1Password.
 
+SecureSafe's vendor package requires Rosetta 2. The switch workflow installs
+Rosetta when absent before Homebrew activation.
+
 ## Intentionally omitted
 
 - stale registered apps whose bundles are absent;
 - GUI editors superseded by Zed;
+- Microsoft Defender, OneDrive, and OneNote, which are bundled by the combined
+  `microsoft-office` cask but are not required here;
+- Conductor and Deliveries, which are not part of the selected baseline;
 - Steam when cloud gaming is the selected restore path;
 - laptop-only battery utilities on the desktop host;
 - deprecated or unused third-party taps and terminal editors;
