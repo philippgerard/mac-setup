@@ -22,7 +22,7 @@ Before starting:
 Open Terminal and paste this tested, revision-pinned bootstrap:
 
 ```bash
-revision='8b875ee8b74f2ffa059c307670fd131677ea206c'
+revision='037056b40b9633eaa2e3f8b16e52757e90dbe658'
 /usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 \
   "https://raw.githubusercontent.com/philippgerard/mac-setup/${revision}/setup.sh" \
   | /bin/bash -p -s -- --revision "$revision"
