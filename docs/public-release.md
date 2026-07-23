@@ -4,7 +4,13 @@ A public release is ready only when `main` starts from the signed, PII-safe root
 no public branch or tag references unsafe history, and the public tree plus exact
 `main` history pass the repository safety checks and Gitleaks.
 
-History replacement does not remove old objects from existing clones or guarantee immediate deletion from GitHub's unreachable-object caches. GitHub Support may need to purge cached commit views and run server-side garbage collection; any third-party clone remains outside the repository owner's control.
+History replacement does not remove old objects from existing clones or
+guarantee immediate deletion from GitHub's unreachable-object caches. GitHub
+also keeps read-only `refs/pull/<number>/head` references for merged pull
+requests; rewriting or deleting the original head branch does not update those
+historical refs. If one contains private metadata, replacing `main` is not a
+complete server-side purge: contact GitHub Support or replace the repository.
+Any third-party clone remains outside the repository owner's control.
 
 For any future sensitive-data incident:
 

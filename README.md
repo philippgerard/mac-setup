@@ -7,8 +7,8 @@ The repository is intentionally public and contains no private personal identity
 The public `main` branch must contain only the sanitized history verified by
 `scripts/check-history-safety origin/main`. See
 [docs/public-release.md](docs/public-release.md) for the limits of history
-replacement: old clones and GitHub's unreachable-object caches can outlive a
-force-push.
+replacement: old clones, merged pull-request refs, and GitHub's
+unreachable-object caches can outlive a force-push.
 
 Chezmoi is not used.
 
