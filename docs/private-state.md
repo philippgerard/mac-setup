@@ -38,11 +38,24 @@ By default, the guided restore asks which configured 1Password account to use
 and lets that account select its default vault. Use `--op-account` and `--vault`
 with `scripts/finish-setup`, or set `MAC_SETUP_1PASSWORD_ACCOUNT` and
 `MAC_SETUP_1PASSWORD_VAULT`, when either must be selected noninteractively. Set
+`MAC_SETUP_GIT_IDENTITY_ITEM` to select another item title, or
 `MAC_SETUP_GIT_IDENTITY_REF` when an explicit `op://Vault/Item` reference is
 preferable. Every private helper clears inherited `OP_*` session, backend,
 service-account, default-vault, and config-directory variables before applying
 these explicit selections, so unrelated shell state cannot redirect a restore
 or backup.
+
+For example:
+
+```bash
+MAC_SETUP_GIT_IDENTITY_ITEM='Other Item' scripts/configure-git-identity
+MAC_SETUP_1PASSWORD_VAULT='Vault Name' scripts/configure-git-identity
+MAC_SETUP_GIT_IDENTITY_REF='op://Vault/Item' scripts/configure-git-identity
+```
+
+Git commits and tags use SSH signing through the 1Password application's
+`op-ssh-sign` program. OpenPGP is retained only for legacy keys and decryption,
+not for Git signing.
 
 Backup upserts first list Documents in the selected account and optional vault,
 then require the configured title to be absent or match exactly one item. A
@@ -76,12 +89,8 @@ OAuth refresh tokens.
 
 Schema version 3 stores an `accounts` array. Keep each account's lowercase
 hyphenated `id` stable. For IMAP/DAV accounts, also keep the profile and payload
-identifiers/UUIDs stable: macOS uses them to recognize an update. Generate new
-UUIDs with `uuidgen` only when adding a genuinely new profile or payload. IMAP
-accounts define incoming and outgoing TLS endpoints and may add CalDAV/CardDAV
-service payloads. Microsoft 365 accounts use the `exchange_oauth` type; their
-metadata remains in this document for guided selection, but setup does not
-generate a managed Exchange profile. Run
+identifiers stable because macOS uses them to recognize an update. Generate new
+UUIDs only for a genuinely new profile or payload. Run
 `scripts/validate-mail-accounts-config` after every edit; it rejects unknown
 fields and credential-shaped keys.
 
@@ -95,20 +104,18 @@ The helper upserts the document and verifies its SHA-256 digest after download.
 Keep email and DAV app passwords in separate 1Password Login items rather than
 adding them to the metadata document.
 
-Restore the private metadata and generate the derived configuration profiles
-with:
+Restore the metadata and regenerate the derived, password-free profiles with:
 
 ```bash
 scripts/restore-mail-accounts-from-1password
 ```
 
-The helper validates the document, atomically restores it with mode `0600`, and
-generates one password-free `.mobileconfig` per IMAP/DAV account below
-`~/Library/Application Support/mac-setup/mail-profiles/`. The private state and
-profile directories have mode `0700`, and the metadata and generated files have
-mode `0600`. A different existing metadata file is preserved with a timestamp
-before replacement. These files remain outside the checkout and must never be
-committed or copied into a flake source.
+The helper validates and atomically restores the JSON with mode `0600`, then
+generates one `.mobileconfig` per IMAP/DAV account below
+`~/Library/Application Support/mac-setup/mail-profiles/`. Private directories
+use mode `0700`; metadata and profiles use mode `0600`. A different existing
+metadata file is preserved with a timestamp. These files remain outside the
+checkout and must never be committed or copied into a flake source.
 
 Older revisions kept the same metadata and profiles below the checkout's
 ignored `.local/` directory. `scripts/flake-source` excludes that entire
@@ -126,67 +133,9 @@ absolute, contain no control characters, and resolve outside the checkout.
 Setup helpers reject `..` and symlink traversal that would resolve back into the
 repository.
 
-The restore helper opens the generated profile directory by default. Install
-only the IMAP/DAV profiles wanted on that Mac, reviewing each manually in
-**System Settings > General > Device Management**. Interactive IMAP installation
-prompts for its email app password; optional CalDAV and CardDAV payloads prompt
-for DAV credentials.
-
-For a selected `exchange_oauth` account, the guided setup instead opens
-**System Settings > Internet Accounts > Add Account > Microsoft Exchange**.
-Before opening it, setup reports whether this Mac has Microsoft's documented
-native-app broker stack: Company Portal, its registered Enterprise SSO plug-in,
-MDM enrollment, and the corresponding Microsoft Extensible SSO profile.
-Installing Company Portal by itself is insufficient to activate that broker,
-and this public baseline does not enroll the Mac into an organization's
-device-management system. The diagnostic is advisory because neither vendor
-documents whether every Apple Internet Accounts authentication session requires
-or can use that broker.
-
-Test the registered security key in a private Safari or Chrome session first. A
-key that works in the browser but not in Internet Accounts means the account and
-key are usable but the native client or its policy needs administrator
-investigation; the managed broker is one possible remediation. If the browser
-also lacks the security-key option, the administrator must check registration
-and tenant authentication policy. A YubiKey used as a PIV smart card instead
-requires a provisioned certificate and Microsoft Entra certificate-based
-authentication; it is not the same as FIDO2.
-
-The OAuth tokens created by a successful Internet Accounts flow remain in the
-macOS account and Keychain infrastructure and are not exported to 1Password.
-No extra password or configuration-profile field can select an MFA method.
-
-As of July 2026, Apple still documents macOS Exchange accounts as using EWS,
-which Microsoft will begin disabling in Exchange Online in October 2026 and
-fully disable in April 2027. Monitor both vendors' migration guidance and keep
-Outlook or the web applications available rather than treating this Apple
-account path as permanent.
-
-The Mailbox.org service bundle uses one CalDAV payload for Calendar and
-Reminders/VTODO discovery and one CardDAV payload for Contacts. Its
-**Calendar and address book client (CalDAV/CardDAV)** application password can
-be used for both prompts. Reminders availability still depends on server task
-discovery and must be verified after installation.
-
-Each IMAP/DAV profile owns only its corresponding managed account bundle and can
-be installed or removed independently. Removing it also removes every service
-in that bundle, so do not delete a profile casually.
-
-If an older revision installed a managed Exchange profile, first verify that
-the account contains no local-only mail or unsent messages. Remove that profile
-in **System Settings > General > Device Management** before adding the native
-Exchange account. Profile removal also removes the account and all services it
-manages, so setup does not automate this migration.
-
-For migration from an older combined managed profile, the standalone personal
-profile preserves that profile's identity. Keep the combined profile installed,
-review the generated replacement, then run
-`scripts/finish-setup --update-profiles` so macOS can process it as an explicit
-update. Install any other desired standalone IMAP/DAV profiles afterward. If
-macOS refuses, verify that affected accounts contain no local-only mail or
-unsent messages before removing the combined profile and installing the desired
-standalone profiles. Removing the combined profile also removes every account
-it manages.
+The guided selection flow, profile passwords, CalDAV/CardDAV behavior, iCloud
+restrictions, Microsoft OAuth/MFA, and migration procedures live in
+[Mail and account setup](mail-accounts.md).
 
 ### Filen Menubar config
 

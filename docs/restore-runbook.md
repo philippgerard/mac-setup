@@ -1,99 +1,176 @@
 # Clean-install restore runbook
 
+The README contains the complete default path. This runbook covers preparation,
+alternative flows, macOS approvals, and recovery when a step is interrupted.
+
 ## Before erasing
 
-1. Complete `docs/pre-wipe-checklist.md`.
+1. Complete the [pre-wipe checklist](pre-wipe-checklist.md).
 2. Push the tested configuration revision and its `flake.lock`.
-3. Verify a recent Time Machine backup by browsing it and restoring a test file.
+3. Verify a recent Time Machine backup by browsing it and restoring a test
+   file.
 4. Push or independently archive every local Git change and branch.
 5. Dump and test any PostgreSQL database that must survive.
-6. Run `scripts/backup-gpg-to-1password` and verify the success result.
-7. Run `scripts/backup-mail-accounts-to-1password` and verify the success result.
-8. Run `scripts/backup-filen-menubar-to-1password` and verify the success result.
-9. Confirm SSH access, 1Password recovery, code-signing identities, FileVault recovery, and Apple account access from another trusted device.
+6. Run the GPG, Mail account, and Filen Menubar 1Password backup helpers and
+   require their verified success results.
+7. Confirm SSH access, 1Password recovery, code-signing identities, FileVault
+   recovery, and Apple account access from another trusted device.
 
-Container volumes on the old Mac are intentionally disposable and are not a wipe gate.
+Container volumes on the old Mac are intentionally disposable and are not a
+wipe gate.
 
-## Fresh macOS
+## Prepare fresh macOS
 
-1. Install macOS and create the intended local account.
+1. Install macOS and create the intended local administrator account.
 2. Apply operating-system updates and enable FileVault.
-3. Sign into the App Store so the declared MAS applications can be installed during activation.
-4. Run `setup.sh` in build-only mode from a tested revision.
-5. Review the build and package changes, then run `setup.sh --provision`.
-6. Follow the guided prompts. The command selects a 1Password account, restores Git identity, serializes the iCloud and personal IMAP/DAV profile approvals, restores GPG and Filen state, authenticates the Filen CLI, and launches Filen Menubar. It is safe to rerun after an interrupted approval.
-7. Enter the Mailbox email-client app password for the Mail prompt. Enter the same **Calendar and address book client (CalDAV/CardDAV)** app password for both DAV prompts when macOS asks separately.
-8. Select an optional work or PEC account only when this Mac needs it. The default guided flow installs only `personal-mail`; explicit account options replace that default and must be repeated for every desired account. IMAP/DAV selections use generated profiles. A Microsoft 365 selection reports the state of Microsoft's optional Company Portal/MDM/Enterprise SSO broker, then opens **System Settings > Internet Accounts > Add Account > Microsoft Exchange**. Missing broker components are diagnostic rather than a blocker because the exact Apple authentication surface is not documented.
-9. Restore private SSH host files and the private repository manifest without automated pulls, resets, or deletion.
-10. Sign into the browser, other sync providers, and licensed applications.
-11. Restore user data from its authoritative remote source and import any required PostgreSQL dumps.
+3. Sign in to the Mac App Store. Homebrew Bundle cannot install declared MAS
+   applications without that session.
+4. Have the 1Password recovery material available. The default restore expects
+   the Git identity, Mail Accounts, GPG, and Filen Menubar items described in
+   [Private state](private-state.md).
+5. Use Terminal for the initial bootstrap.
 
-Use `setup.sh --apply` for a base-only activation. Run `scripts/finish-setup`
-later to perform the same guided private restore. Use
-`scripts/finish-setup --help` for explicit account, vault, optional Mail
-account, and skip controls.
+The setup supports Apple Silicon only. The full Xcode application is not part
+of the default stack.
 
-Pass private-restore options through the one-command flow after `--`:
+## Build the tested revision
+
+Use the exact revision-pinned block from the current public README. The first
+run installs or requests prerequisites, creates `~/.config/mac-setup`,
+validates the checkout, and builds without activation.
+
+If Command Line Tools are missing, setup opens Apple's installer and exits.
+Finish the installer and rerun the same bootstrap block.
+
+If Determinate Nix was installed but is not yet visible to the current shell,
+restart Terminal and rerun the same block.
+
+The revision pin and transactional checkout behavior are explained in
+[Architecture and bootstrap safety](architecture.md).
+
+## Provision the Mac
+
+After the build succeeds:
 
 ```bash
-# Personal plus work Mail
-setup.sh --provision -- \
-  --mail-account personal-mail --mail-account work-mail
-
-# An older combined or otherwise different profile
-setup.sh --provision -- --update-profiles
+~/.config/mac-setup/setup.sh --provision
 ```
 
-## Manual macOS approvals
+This rebuilds, activates nix-darwin, Home Manager, Homebrew, MAS applications,
+and Rosetta when required, then starts the guided private restore.
 
-Review the iCloud restrictions profile and each selected IMAP/DAV profile before
-approving them in Device Management. Add a selected Microsoft 365 account only
-through the native Internet Accounts flow. The broker diagnostic reports
-Company Portal, its Microsoft SSO extension, MDM enrollment, and the
-organization's corresponding SSO payload. Installing Company Portal alone is
-insufficient to activate that broker, but a missing broker does not prove that
-Apple's authentication session cannot use the key.
+The default flow:
 
-Test the key before a password in a private Safari or Chrome session. If that
-works but Internet Accounts offers only Authenticator number matching, cancel
-and ask the administrator to inspect the exact native-client sign-in and its
-Conditional Access result; an organization-managed Microsoft broker is one
-possible remediation. A missing browser option means the administrator must
-inspect the account registration and authentication policy. If the organization
-uses a PIV certificate on the YubiKey, ask for its certificate-based
-authentication setup instead.
+1. selects the configured 1Password account, prompting when there is more than
+   one;
+2. ensures CLI integration and the SSH agent are enabled;
+3. opens and verifies the iCloud service restrictions profile;
+4. restores private and public Git identities;
+5. restores Mail/DAV metadata and configures `personal-mail`;
+6. restores legacy GPG keys and ownertrust;
+7. restores Filen Menubar configuration;
+8. authenticates the Filen CLI when needed; and
+9. launches Filen Menubar.
 
-Grant App Management to the terminal emulator running Home Manager when macOS
-requests it, then reopen that terminal and rerun activation. Also review Full
-Disk Access, Accessibility, Input Monitoring, Screen Recording, microphone,
-camera, notifications, Automation, login items, and network/system extensions.
-These approvals are intentionally documented rather than bypassed.
+The command is resumable. Rerun the same `--provision` command after an
+interrupted approval or sign-in, unless setup specifically asks for
+`--update-profiles` after detecting a different installed profile.
 
-If an older setup installed a managed Exchange profile, first verify that the
-account has no local-only mail or unsent messages. Remove the old profile in
-**System Settings > General > Device Management** before adding the native
-Exchange account. Removing it also removes the account and services it manages,
-so setup does not automate this migration.
+## Required approvals
 
-## Smoke tests
+macOS and vendors intentionally keep these steps interactive:
 
-- `git commit -S` succeeds and reports an SSH signature.
-- Git name and email come from the private include.
-- The removable iCloud restrictions profile is visible in Device Management; iCloud Mail, Calendar, and Contacts are unavailable, and the profile contains no restriction for iCloud Reminders or unrelated iCloud services.
-- Every selected IMAP/DAV profile is visible in Device Management; each restored Mail account can send and receive; and CalDAV/CardDAV calendars, reminders, and contacts appear where configured.
-- Every selected Microsoft 365 account is visible in Internet Accounts, its required Apple apps are enabled, and native OAuth with the organization's approved FIDO2 broker or PIV/certificate method has completed.
-- `fnm`, `gh`, `codex`, `claude`, `tmux`, `gpg`, `ssh`, Cargo, rustc,
-  rustfmt, Clippy, rust-analyzer, Erlang's `erl`, Elixir's `mix`, and Mole's
-  `mo` command start.
-- `filen --version` reports the pinned CLI and Filen Menubar starts at login.
-- `/Applications/Microsoft Teams.app` exists when the work setup is selected.
-- `dscl . -read "/Users/$(id -un)" UserShell` reports `/run/current-system/sw/bin/fish`.
-- After restoring the project-selected Node version through `fnm`, `node`, `corepack`, and `pnpm` start.
-- `pnpm bin -g` succeeds and `topgrade --dry-run --only pnpm` completes without an error.
-- An Intel executable can run through Rosetta. If Xcode was installed manually,
-  its reviewed, explicit `sudo /usr/bin/xcodebuild -runFirstLaunch` completed
-  and `/usr/bin/xcodebuild -checkFirstLaunchStatus` succeeds.
-- Otty handles shell scripts and SSH URLs; its config is a writable regular file and appearance changes survive an app restart. Zed handles Markdown, its settings file is a writable regular file, and UI changes survive an app restart.
-- 1Password, Mail, browser sync, Filen Menubar sync, and App Store installs have completed.
-- Representative personal and work repositories build successfully.
-- A second `scripts/rebuild build` has no unexpected effect.
+- enter the administrator password when bootstrap or activation requests it;
+- sign in to 1Password, enable **Settings > Developer > Integrate with
+  1Password CLI**, and enable the 1Password SSH agent;
+- review and approve the iCloud restrictions profile and every selected
+  IMAP/DAV profile in **System Settings > General > Device Management**;
+- enter the corresponding Mail and DAV application passwords;
+- complete Microsoft native OAuth/MFA for a selected Exchange account, then
+  type `configured` when setup asks for confirmation;
+- quit Filen Menubar from its menu if setup pauses before restoring its
+  configuration; and
+- authenticate the Filen CLI.
+
+If Home Manager stops at `checkAppManagementPermission`, enable the terminal in
+**System Settings > Privacy & Security > App Management**, quit and reopen that
+terminal, then rerun
+`~/.config/mac-setup/setup.sh --provision`. The failed activation stops before
+Home Manager changes user files.
+
+Other privacy permissions such as Full Disk Access, Accessibility, Input
+Monitoring, Screen Recording, microphone, camera, notifications, Automation,
+login items, and system extensions remain app-specific manual reviews.
+
+Mail/DAV passwords, optional account selection, iCloud restrictions, Microsoft
+security-key troubleshooting, and profile migration are documented in
+[Mail and account setup](mail-accounts.md).
+
+## Alternative flows
+
+### Select accounts
+
+The first explicit `--mail-account` replaces the `personal-mail` default.
+Repeat it for every account wanted:
+
+```bash
+~/.config/mac-setup/setup.sh --provision -- \
+  --mail-account personal-mail --mail-account work-mail
+```
+
+### Select a 1Password account or vault
+
+Options after `--` are passed to the private restore:
+
+```bash
+~/.config/mac-setup/setup.sh --provision -- \
+  --op-account account-shorthand --vault 'Vault Name'
+```
+
+The equivalent environment variables are `MAC_SETUP_1PASSWORD_ACCOUNT` and
+`MAC_SETUP_1PASSWORD_VAULT`. Explicit selection is not inferred from ambient
+`OP_*` variables.
+
+### Activate only the public base
+
+```bash
+~/.config/mac-setup/setup.sh --apply
+```
+
+This activates the base and opens the iCloud restrictions profile if needed.
+Run `~/.config/mac-setup/scripts/finish-setup` later for the guided private
+restore.
+
+### Use another checkout
+
+```bash
+./setup.sh --config-dir "$PWD" --provision
+```
+
+An existing checkout is never pulled, reset, or changed automatically. Review
+and update it yourself first.
+
+### Skip unavailable private state
+
+If a default 1Password backup item does not exist, skip that component rather
+than weakening the restore:
+
+```bash
+~/.config/mac-setup/setup.sh --provision -- \
+  --skip-gpg --skip-filen
+```
+
+Run `~/.config/mac-setup/scripts/finish-setup --help` for every account, vault,
+skip, dry-run, and profile-update option.
+
+## Complete the restore
+
+Restore private SSH host files below `~/.ssh/config.d/` and private repository
+manifests without automated pulls, resets, or deletion. Sign in to browsers,
+licensed applications, and other sync providers through their supported flows.
+Restore user data from its authoritative remote source and import any required
+database dumps.
+
+Then follow [Post-install verification](restore-verification.md). Do not rely
+on the rebuilt Mac until Mail/DAV, Filen sync, Git signing, GPG fingerprints,
+and representative project builds have been checked.
