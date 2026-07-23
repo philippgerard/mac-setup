@@ -1,0 +1,170 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/private-state-paths
+source "$REPO_ROOT/scripts/private-state-paths"
+CONFIG_FILE="${1:-${MAC_SETUP_MAIL_CONFIG_FILE:-$MAC_SETUP_MAIL_CONFIG_FILE_DEFAULT}}"
+CONFIG_FILE="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$CONFIG_FILE" "Mail account config")"
+CONFIG_DIR="$(/usr/bin/dirname "$CONFIG_FILE")"
+
+command -v jq >/dev/null 2>&1 || {
+  echo "required command not found: jq" >&2
+  exit 1
+}
+
+[[ -d "$CONFIG_DIR" && ! -L "$CONFIG_DIR" && -O "$CONFIG_DIR" ]] || {
+  echo "mail account config directory is unsafe or missing" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$CONFIG_DIR")" == "700" ]] || {
+  echo "mail account config directory must have mode 0700" >&2
+  exit 1
+}
+[[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] || {
+  echo "mail account config is unsafe or missing" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$CONFIG_FILE")" == "600" ]] || {
+  echo "mail account config must have mode 0600" >&2
+  exit 1
+}
+
+jq -e '
+  def exact_keys($allowed):
+    ((keys | sort) == ($allowed | sort));
+  def nonempty_string:
+    (type == "string") and (length > 0) and all(explode[]; . >= 32 and . != 127);
+  def uuid:
+    nonempty_string and test("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$");
+  def identifier:
+    nonempty_string and test("^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$");
+  def email_address:
+    nonempty_string and test("^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$");
+  def endpoint:
+    exact_keys(["authentication", "hostname", "port", "use_ssl", "username"])
+    and (.authentication == "password")
+    and (.hostname | nonempty_string)
+    and (.port | (type == "number") and (floor == .) and (. >= 1) and (. <= 65535))
+    and (.use_ssl == true)
+    and (.username | nonempty_string);
+  def profile_identity:
+    exact_keys(["display_name", "identifier", "uuid"])
+    and (.display_name | nonempty_string)
+    and (.identifier | identifier)
+    and (.uuid | uuid);
+  def payload_identity:
+    exact_keys(["identifier", "uuid"])
+    and (.identifier | identifier)
+    and (.uuid | uuid);
+  def dav_service:
+    exact_keys([
+      "authentication",
+      "description",
+      "hostname",
+      "payload",
+      "port",
+      "use_ssl",
+      "username"
+    ])
+    and (.authentication == "password")
+    and (.description | nonempty_string)
+    and (.hostname | nonempty_string)
+    and (.payload | payload_identity)
+    and (.port | (type == "number") and (floor == .) and (. >= 1) and (. <= 65535))
+    and (.use_ssl == true)
+    and (.username | nonempty_string);
+  def dav_services:
+    exact_keys(["caldav", "carddav"])
+    and (.caldav | dav_service)
+    and (.carddav | dav_service);
+  def imap_account:
+    (if has("services") then
+      exact_keys([
+        "description",
+        "display_name",
+        "email_address",
+        "id",
+        "incoming",
+        "outgoing",
+        "password_same_as_incoming",
+        "payload",
+        "profile",
+        "services",
+        "type"
+      ])
+      and (.services | dav_services)
+    else
+      exact_keys([
+        "description",
+        "display_name",
+        "email_address",
+        "id",
+        "incoming",
+        "outgoing",
+        "password_same_as_incoming",
+        "payload",
+        "profile",
+        "type"
+      ])
+    end)
+    and (.id | nonempty_string and test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))
+    and (.description | nonempty_string)
+    and (.display_name | nonempty_string)
+    and (.email_address | email_address)
+    and (.profile | profile_identity)
+    and (.payload | payload_identity)
+    and (.incoming | endpoint)
+    and (.outgoing | endpoint)
+    and (.password_same_as_incoming == true);
+  def exchange_account:
+    exact_keys([
+      "description",
+      "email_address",
+      "id",
+      "payload",
+      "profile",
+      "type",
+      "username"
+    ])
+    and (.id | nonempty_string and test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"))
+    and (.description | nonempty_string)
+    and (.email_address | email_address)
+    and (.profile | profile_identity)
+    and (.payload | payload_identity)
+    and (.username | nonempty_string);
+  def payload_identities:
+    .accounts[] as $account |
+    $account.profile,
+    $account.payload,
+    ($account.services? | select(type == "object") | [.caldav.payload, .carddav.payload][]);
+
+  exact_keys([
+    "accounts",
+    "schema_version"
+  ])
+  and (.schema_version == 3)
+  and (.accounts | (type == "array") and (length > 0))
+  and (all(.accounts[];
+    if .type == "imap" then imap_account
+    elif .type == "exchange_oauth" then exchange_account
+    else false
+    end
+  ))
+  and (([.accounts[].id] | length) == ([.accounts[].id] | unique | length))
+  and (([.accounts[].profile.display_name] | length) == ([.accounts[].profile.display_name] | unique | length))
+  and (([payload_identities | .identifier] | length)
+    == ([payload_identities | .identifier] | unique | length))
+  and (([payload_identities | .uuid] | length)
+    == ([payload_identities | .uuid] | unique | length))
+' "$CONFIG_FILE" >/dev/null || {
+  echo "mail account config does not match the supported password-free schema" >&2
+  exit 1
+}
+
+echo "mail account config validation passed"

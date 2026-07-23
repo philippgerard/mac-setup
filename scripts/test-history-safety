@@ -1,0 +1,196 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-history-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-history-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fixture_repo="$test_root/repository"
+/usr/bin/git init -q "$fixture_repo"
+/bin/mkdir "$fixture_repo/scripts"
+/bin/cp \
+  "$REPO_ROOT/scripts/check-history-safety" \
+  "$REPO_ROOT/scripts/check-public-safety" \
+  "$REPO_ROOT/scripts/trusted-git" \
+  "$REPO_ROOT/scripts/trusted-path" \
+  "$fixture_repo/scripts/"
+/bin/chmod 755 "$fixture_repo/scripts/check-history-safety"
+private_email="$(printf '%s%s%s' private @ example.invalid)"
+public_repository_url="$(/usr/bin/sed -n \
+  's#^REPO_URL="https://github.com/\([^/]*\)/mac-setup[.]git"#\1#p' \
+  "$REPO_ROOT/setup.sh")"
+[[ "$public_repository_url" =~ ^[A-Za-z0-9._-]+$ ]]
+safe_name="$public_repository_url"
+safe_email="$(printf '%s%s%s%s' 123+ "$safe_name" @ users.noreply.github.com)"
+/usr/bin/git -C "$fixture_repo" config user.name "$safe_name"
+/usr/bin/git -C "$fixture_repo" config user.email "$safe_email"
+/usr/bin/git -C "$fixture_repo" config commit.gpgSign false
+/usr/bin/git -C "$fixture_repo" config tag.gpgSign false
+/usr/bin/git -C "$fixture_repo" add scripts
+/usr/bin/git -C "$fixture_repo" commit -q -m clean
+clean_revision="$(/usr/bin/git -C "$fixture_repo" rev-parse HEAD)"
+"$fixture_repo/scripts/check-history-safety" HEAD >/dev/null
+
+alternate_repository="$test_root/alternate-repository"
+/usr/bin/git init -q "$alternate_repository"
+bash_env_file="$test_root/bash-env"
+bash_env_marker="$test_root/bash-env-used"
+# shellcheck disable=SC2016 # Write a literal child-shell variable reference.
+printf 'printf used >"$HISTORY_SAFETY_BASH_ENV_MARKER"\n' >"$bash_env_file"
+GIT_DIR="$alternate_repository/.git" \
+  BASH_ENV="$bash_env_file" \
+  HISTORY_SAFETY_BASH_ENV_MARKER="$bash_env_marker" \
+  "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null
+[[ ! -e "$bash_env_marker" ]] || {
+  echo "history-safety scan executed BASH_ENV before hardening" >&2
+  exit 1
+}
+
+wrong_noreply_email="$(printf '%s%s%s' 123+public @ users.noreply.github.com)"
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$wrong_noreply_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q --allow-empty \
+    -m unsafe-noreply-owner
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted a noreply address for another public owner" >&2
+  exit 1
+fi
+
+printf '%s\n' metadata >"$fixture_repo/metadata"
+/usr/bin/git -C "$fixture_repo" add metadata
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$private_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-committer
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted a private committer email" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+printf '%s\n' name-metadata >"$fixture_repo/name-metadata"
+/usr/bin/git -C "$fixture_repo" add name-metadata
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME='Private Person' GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-committer-name
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted an unapproved committer display name" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+sensitive_email="$(printf '%s%s%s' account @ private.example)"
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q --allow-empty \
+    -m "unsafe message $sensitive_email"
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted an email in a commit message" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+printf '%s\n' "$sensitive_email" >"$fixture_repo/extensionless-private-state"
+/usr/bin/git -C "$fixture_repo" add extensionless-private-state
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-content
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted an email in an extensionless file" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+printf 'binary\0%s\0fixture\n' "$sensitive_email" \
+  >"$fixture_repo/binary-private-state"
+/usr/bin/git -C "$fixture_repo" add binary-private-state
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-binary-content
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted sensitive bytes after NUL" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+: >"$fixture_repo/$sensitive_email"
+/usr/bin/git -C "$fixture_repo" add -- "$sensitive_email"
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-path
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted sensitive content in a tree path" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+/bin/mkdir "$fixture_repo/.LOCAL"
+printf '%s\n' 'otherwise safe private path' >"$fixture_repo/.LOCAL/config"
+/usr/bin/git -C "$fixture_repo" add -f .LOCAL/config
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-private-path
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted a case-insensitive private .local path" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" tag -a unsafe-tag-message \
+    -m "unsafe tag $sensitive_email"
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted an email in an annotated-tag message" >&2
+  exit 1
+fi
+/usr/bin/git -C "$fixture_repo" tag -d unsafe-tag-message >/dev/null
+
+GIT_COMMITTER_NAME='Private Person' GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" tag -a unsafe-tagger -m release
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan accepted an unapproved annotated-tag display name" >&2
+  exit 1
+fi
+/usr/bin/git -C "$fixture_repo" tag -d unsafe-tagger >/dev/null
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+printf '# %s\n' "$sensitive_email" \
+  >>"$fixture_repo/scripts/check-public-safety"
+/usr/bin/git -C "$fixture_repo" add scripts/check-public-safety
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-public-checker-content
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan exempted sensitive content in the public-safety checker" >&2
+  exit 1
+fi
+
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  checkout -q --detach "$clean_revision"
+printf '# %s\n' "$sensitive_email" \
+  >>"$fixture_repo/scripts/check-history-safety"
+/usr/bin/git -C "$fixture_repo" add scripts/check-history-safety
+GIT_AUTHOR_NAME="$safe_name" GIT_AUTHOR_EMAIL="$safe_email" \
+  GIT_COMMITTER_NAME="$safe_name" GIT_COMMITTER_EMAIL="$safe_email" \
+  /usr/bin/git -C "$fixture_repo" commit -q -m unsafe-history-checker-content
+if "$fixture_repo/scripts/check-history-safety" HEAD >/dev/null 2>&1; then
+  echo "history scan exempted sensitive content in its own checker" >&2
+  exit 1
+fi
+
+echo "history safety regression tests passed"

@@ -1,0 +1,461 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FINISH_SCRIPT="$REPO_ROOT/scripts/finish-setup"
+SETUP_SCRIPT="$REPO_ROOT/setup.sh"
+UPDATE_SCRIPT="$REPO_ROOT/scripts/update"
+REBUILD_SCRIPT="$REPO_ROOT/scripts/rebuild"
+at_sign='@'
+work_address="work${at_sign}example.test"
+
+test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-finish-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_dir:-}" ]]; then
+    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+default_plan="$($FINISH_SCRIPT --dry-run)"
+grep -Fq "Mail/DAV or Exchange account: personal-mail" <<<"$default_plan"
+grep -Fq "iCloud service restrictions profile" <<<"$default_plan"
+grep -Fq "legacy GPG" <<<"$default_plan"
+grep -Fq "Filen config" <<<"$default_plan"
+
+custom_plan="$($FINISH_SCRIPT \
+  --dry-run \
+  --skip-icloud \
+  --skip-git \
+  --skip-gpg \
+  --skip-filen \
+  --mail-account work-mail \
+  --mail-account work-mail)"
+grep -Fq "Mail/DAV or Exchange account: work-mail" <<<"$custom_plan"
+[[ "$(grep -Fc "Mail/DAV or Exchange account: work-mail" <<<"$custom_plan")" -eq 1 ]]
+if grep -Fq "Mail/DAV or Exchange account: personal-mail" <<<"$custom_plan"; then
+  echo "an explicit Mail account did not replace the personal default" >&2
+  exit 1
+fi
+if grep -Fq "iCloud service restrictions profile" <<<"$custom_plan"; then
+  echo "dry-run plan ignored --skip-icloud" >&2
+  exit 1
+fi
+
+legacy_alias_plan="$($FINISH_SCRIPT \
+  --dry-run \
+  --mail-profile work-mail)"
+grep -Fq "Mail/DAV or Exchange account: work-mail" <<<"$legacy_alias_plan"
+if grep -Fq "Mail/DAV or Exchange account: personal-mail" <<<"$legacy_alias_plan"; then
+  echo "the --mail-profile compatibility alias did not replace the personal default" >&2
+  exit 1
+fi
+
+if "$FINISH_SCRIPT" --dry-run --mail-account '../unsafe' >/dev/null 2>&1; then
+  echo "unsafe Mail account ID was accepted" >&2
+  exit 1
+fi
+if "$FINISH_SCRIPT" --dry-run --mail-profile '../unsafe' >/dev/null 2>&1; then
+  echo "unsafe Mail profile compatibility ID was accepted" >&2
+  exit 1
+fi
+for mail_option in --mail-account --mail-profile; do
+  if "$FINISH_SCRIPT" --dry-run --no-mail "$mail_option" personal-mail >/dev/null 2>&1; then
+    echo "conflicting Mail account options were accepted: $mail_option" >&2
+    exit 1
+  fi
+done
+if "$FINISH_SCRIPT" --dry-run --unknown-option >/dev/null 2>&1; then
+  echo "unknown finish-setup option was accepted" >&2
+  exit 1
+fi
+
+extract_finish_function() {
+  local function_name="$1"
+
+  /usr/bin/awk -v function_start="$function_name() {" '
+    $0 == function_start {
+      in_function = 1
+    }
+    in_function {
+      print
+    }
+    in_function && $0 == "}" {
+      exit
+    }
+  ' "$FINISH_SCRIPT"
+}
+
+mail_type_function="$(extract_finish_function mail_account_type)"
+native_exchange_function="$(extract_finish_function configure_native_exchange_account)"
+passkey_readiness_function="$(extract_finish_function report_microsoft_native_passkey_broker_state)"
+open_accounts_function="$(extract_finish_function open_internet_accounts)"
+confirm_exchange_function="$(extract_finish_function confirm_native_exchange_setup)"
+mail_dispatch_function="$(extract_finish_function configure_mail_account)"
+
+# shellcheck disable=SC2016 # Match literal jq source in the dispatcher.
+grep -Fq '.accounts[] | select(.id == $id)' <<<"$mail_type_function"
+# shellcheck disable=SC2016 # Match literal jq source in the dispatcher.
+grep -Fq '$matches[0].type' <<<"$mail_type_function"
+# shellcheck disable=SC2016 # Match the literal trusted macOS opener.
+grep -Fq '/usr/bin/open "$INTERNET_ACCOUNTS_URL"' <<<"$open_accounts_function"
+grep -Fq 'Add Account > Microsoft Exchange' <<<"$confirm_exchange_function"
+grep -Fq 'Security key' <<<"$confirm_exchange_function"
+grep -Fq 'before entering a password' <<<"$confirm_exchange_function"
+grep -Fq 'Authenticator number matching' <<<"$confirm_exchange_function"
+grep -Fq "type 'configured'" <<<"$confirm_exchange_function"
+grep -Fq 'MICROSOFT_PASSKEY_READINESS_SCRIPT' <<<"$passkey_readiness_function"
+grep -Fq 'advisory' <<<"$passkey_readiness_function"
+grep -Fq 'Authenticator request' <<<"$passkey_readiness_function"
+grep -Fq 'report_microsoft_native_passkey_broker_state' <<<"$native_exchange_function"
+grep -Fq 'open_internet_accounts' <<<"$native_exchange_function"
+grep -Fq 'confirm_native_exchange_setup' <<<"$native_exchange_function"
+grep -Fq 'not programmatically verify' <<<"$native_exchange_function"
+if grep -Fq 'validate_mail_profile' <<<"$native_exchange_function"; then
+  echo "native Exchange setup unexpectedly validates or installs a Mail profile" >&2
+  exit 1
+fi
+grep -Fq 'imap)' <<<"$mail_dispatch_function"
+# shellcheck disable=SC2016 # Match the literal selected-account validation.
+grep -Fq 'validate_mail_profile "$account_id"' <<<"$mail_dispatch_function"
+grep -Fq 'exchange_oauth)' <<<"$mail_dispatch_function"
+# shellcheck disable=SC2016 # Match the literal selected-account dispatch.
+grep -Fq 'configure_native_exchange_account "$account_id"' <<<"$mail_dispatch_function"
+# shellcheck disable=SC2016 # Match the literal selected-account dispatch.
+grep -Fq 'configure_mail_account "$mail_account_id"' "$FINISH_SCRIPT"
+
+# Exercise both runtime dispatcher branches with controlled collaborators.
+# shellcheck disable=SC2329 # Mocks are invoked by the evaluated production function.
+exchange_dispatch_trace="$(
+  (
+    mail_account_type() {
+      printf '%s\n' exchange_oauth
+    }
+    configure_native_exchange_account() {
+      printf 'native:%s\n' "$1"
+    }
+    validate_mail_profile() {
+      printf 'profile:%s\n' "$1"
+    }
+    ensure_profile() {
+      printf 'install:%s\n' "$1"
+    }
+    eval "$mail_dispatch_function"
+    configure_mail_account work-mail
+  )
+)"
+[[ "$exchange_dispatch_trace" == "native:work-mail" ]] || {
+  echo "Exchange account dispatch did not exclusively use native setup" >&2
+  exit 1
+}
+
+# shellcheck disable=SC2034,SC2329 # Mocks/state are used by evaluated production code.
+imap_dispatch_trace="$(
+  (
+    MAIL_PROFILE_FILE=""
+    mail_account_type() {
+      printf '%s\n' imap
+    }
+    configure_native_exchange_account() {
+      printf 'native:%s\n' "$1"
+    }
+    validate_mail_profile() {
+      MAIL_PROFILE_FILE="/private/test.mobileconfig"
+      printf 'profile:%s\n' "$1"
+    }
+    ensure_profile() {
+      printf 'install:%s:%s\n' "$1" "$2"
+    }
+    eval "$mail_dispatch_function"
+    configure_mail_account personal-mail
+  )
+)"
+[[ "$imap_dispatch_trace" == \
+  $'profile:personal-mail\ninstall:Mail/DAV profile \'personal-mail\':/private/test.mobileconfig' ]] || {
+  echo "IMAP account dispatch did not exclusively use profile setup" >&2
+  exit 1
+}
+
+# Exercise the native helper with mocked UI collaborators. Its private metadata
+# lookups, Internet Accounts opener, explicit confirmation, and status marker
+# must all participate in the runtime path.
+# shellcheck disable=SC2034,SC2329 # Mocks/state are used by evaluated production code.
+native_exchange_trace="$(
+  (
+    CONFIG_FILE="/private/test-mail-accounts.json"
+    NATIVE_EXCHANGE_SELECTED=0
+    report_microsoft_native_passkey_broker_state() {
+      printf '%s\n' readiness-checked
+    }
+    jq() {
+      if [[ "$*" == *'.description'* ]]; then
+        printf '%s\n' "Work"
+      elif [[ "$*" == *'.email_address'* ]]; then
+        printf '%s\n' "$work_address"
+      else
+        return 1
+      fi
+    }
+    open_internet_accounts() {
+      printf '%s\n' opened
+    }
+    confirm_native_exchange_setup() {
+      printf 'confirmed:%s:%s\n' "$1" "$2"
+    }
+    eval "$native_exchange_function"
+    configure_native_exchange_account work-mail
+    printf 'selected:%s\n' "$NATIVE_EXCHANGE_SELECTED"
+  )
+)"
+grep -Fxq 'readiness-checked' <<<"$native_exchange_trace"
+grep -Fxq 'opened' <<<"$native_exchange_trace"
+grep -Fxq "confirmed:Work:$work_address" <<<"$native_exchange_trace"
+grep -Fxq 'selected:1' <<<"$native_exchange_trace"
+grep -Fq 'user-confirmed' <<<"$native_exchange_trace"
+grep -Fq 'not programmatically verify' <<<"$native_exchange_trace"
+
+broker_advisory="$(
+  (
+    # shellcheck disable=SC2034 # Read by the evaluated production function.
+    MICROSOFT_PASSKEY_READINESS_SCRIPT="/usr/bin/false"
+    eval "$passkey_readiness_function"
+    report_microsoft_native_passkey_broker_state
+    printf '%s\n' continued
+  ) 2>&1
+)"
+grep -Fq 'does not prove that Apple Internet Accounts will fail' <<<"$broker_advisory"
+grep -Fq 'Authenticator request' <<<"$broker_advisory"
+grep -Fxq 'continued' <<<"$broker_advisory"
+
+if MAC_SETUP_PRIVATE_STATE_DIR="$REPO_ROOT/.local/private-state" \
+  "$FINISH_SCRIPT" --dry-run >/dev/null 2>&1; then
+  echo "finish-setup accepted a private-state directory inside the checkout" >&2
+  exit 1
+fi
+if MAC_SETUP_MAIL_CONFIG_FILE="$REPO_ROOT/mail-accounts.json" \
+  "$FINISH_SCRIPT" --dry-run >/dev/null 2>&1; then
+  echo "finish-setup accepted a per-file Mail override inside the checkout" >&2
+  exit 1
+fi
+for filen_private_script in \
+  "$REPO_ROOT/scripts/backup-filen-menubar-to-1password" \
+  "$REPO_ROOT/scripts/restore-filen-menubar-from-1password"; do
+  if FILEN_MENUBAR_CONFIG_FILE="$REPO_ROOT/filen-private-config.json" \
+    "$filen_private_script" >/dev/null 2>&1; then
+    echo "Filen helper accepted a private config path inside the checkout" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2016 # Match the canonical production path guard.
+  grep -Fq 'CONFIG_FILE="$(mac_setup_canonical_private_path' \
+    "$filen_private_script"
+done
+
+malicious_home="$test_dir/home"
+mkdir -p "$malicious_home/.local/bin"
+marker="$test_dir/untrusted-path-was-used"
+printf '#!/bin/bash\nprintf used >%q\nprintf Darwin\\n\n' "$marker" \
+  >"$malicious_home/.local/bin/uname"
+chmod 700 "$malicious_home/.local/bin/uname"
+HOME="$malicious_home" "$FINISH_SCRIPT" \
+  --skip-icloud --skip-git --skip-gpg --skip-filen --no-mail \
+  >/dev/null 2>&1 || true
+[[ ! -e "$marker" ]] || {
+  echo "finish-setup executed a command from the user-writable PATH" >&2
+  exit 1
+}
+
+# shellcheck disable=SC2329 # Exported for the child-process regression test.
+function uname() {
+  printf used >"$marker"
+  printf 'Darwin\n'
+}
+export -f uname
+HOME="$malicious_home" "$FINISH_SCRIPT" \
+  --skip-icloud --skip-git --skip-gpg --skip-filen --no-mail \
+  >/dev/null 2>&1 || true
+unset -f uname
+[[ ! -e "$marker" ]] || {
+  echo "finish-setup executed an inherited Bash function" >&2
+  exit 1
+}
+
+# shellcheck disable=SC2329 # Exported for raw-environment rejection testing.
+function mac_setup_exported_private_test() {
+  printf used >"$marker"
+}
+export -f mac_setup_exported_private_test
+if HOME="$malicious_home" "$FINISH_SCRIPT" \
+  --skip-icloud --skip-git --skip-gpg --skip-filen --no-mail \
+  >/dev/null 2>&1; then
+  echo "finish-setup accepted an exported Bash function environment" >&2
+  exit 1
+fi
+unset -f mac_setup_exported_private_test
+[[ ! -e "$marker" ]] || {
+  echo "an exported Bash function reached a private-setup descendant" >&2
+  exit 1
+}
+
+bash_env_file="$test_dir/malicious-bash-env"
+plain_bash_child="$test_dir/plain-bash-child"
+# shellcheck disable=SC2016 # The malicious child startup expands this variable.
+printf 'printf used >"$MAC_SETUP_BASH_ENV_MARKER"\n' >"$bash_env_file"
+printf '%s\n' 'exit 0' >"$plain_bash_child"
+BASH_ENV="$bash_env_file" MAC_SETUP_BASH_ENV_MARKER="$marker" \
+  /bin/bash -p -c \
+  'source "$1"; mac_setup_harden_environment; /bin/bash "$2"' \
+  _ "$REPO_ROOT/scripts/trusted-path" "$plain_bash_child"
+[[ ! -e "$marker" ]] || {
+  echo "BASH_ENV reached an unprotected private-setup descendant" >&2
+  exit 1
+}
+
+# shellcheck disable=SC2329 # Exported for the privileged-shebang regression test.
+function source() {
+  printf used >"$marker"
+}
+export -f source
+HOME="$malicious_home" "$FINISH_SCRIPT" \
+  --skip-icloud --skip-git --skip-gpg --skip-filen --no-mail \
+  >/dev/null 2>&1 || true
+unset -f source
+[[ ! -e "$marker" ]] || {
+  echo "finish-setup imported a function before environment hardening" >&2
+  exit 1
+}
+
+if grep -Eq '^ONEPASSWORD_ACCOUNT_VALUE=.*\$\{?OP_ACCOUNT' "$FINISH_SCRIPT"; then
+  echo "finish-setup still treats ambient OP_ACCOUNT as an explicit selection" >&2
+  exit 1
+fi
+grep -Fq 'mac_setup_sanitize_1password_environment' "$FINISH_SCRIPT"
+grep -Fq '^/nix/store/[0-9a-z]{32}-filen$' "$FINISH_SCRIPT"
+grep -Fq 'validate_filen_app' "$FINISH_SCRIPT"
+# shellcheck disable=SC2016 # Match literal production variable references.
+grep -Fq '"$FILEN_APP_VALIDATOR" "$FILEN_IMMUTABLE_APP" "$FILEN_APP"' "$FINISH_SCRIPT"
+
+# Activated profiles must win over inherited immutable Nix-shell tools, while
+# user-writable and Homebrew paths must be discarded entirely.
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+original_path="$PATH"
+trusted_store_bin=""
+IFS=: read -r -a original_path_entries <<<"$original_path" || true
+for path_entry in "${original_path_entries[@]}"; do
+  if [[ "$path_entry" =~ ^/nix/store/[0-9a-z]{32}-[^/]+/bin$ ]]; then
+    trusted_store_bin="$path_entry"
+    break
+  fi
+done
+if [[ -z "$trusted_store_bin" ]]; then
+  # shellcheck source=scripts/trusted-nix
+  source "$REPO_ROOT/scripts/trusted-nix"
+  trusted_store_bin="$(/usr/bin/dirname "$(mac_setup_trusted_nix)")"
+fi
+test_path="$(PATH="$malicious_home/.local/bin:/opt/homebrew/bin${trusted_store_bin:+:$trusted_store_bin}" mac_setup_trusted_path)"
+test_user="$(/usr/bin/id -un)"
+expected_prefix="/etc/profiles/per-user/$test_user/bin:/run/current-system/sw/bin"
+[[ "$test_path" == "$expected_prefix"* ]] || {
+  echo "activated profiles do not lead the private-restore PATH" >&2
+  exit 1
+}
+[[ "$test_path" == "$expected_prefix:$trusted_store_bin:/usr/bin:/bin:/usr/sbin:/sbin" ]] || {
+  echo "trusted Nix-shell fallback has the wrong PATH priority" >&2
+  exit 1
+}
+[[ "$test_path" != *"$malicious_home"* && "$test_path" != *"/opt/homebrew"* ]] || {
+  echo "trusted private-restore PATH retained a writable package directory" >&2
+  exit 1
+}
+
+for private_script in \
+  "$FINISH_SCRIPT" \
+  "$REPO_ROOT/scripts/backup-filen-menubar-to-1password" \
+  "$REPO_ROOT/scripts/backup-gpg-to-1password" \
+  "$REPO_ROOT/scripts/backup-mail-accounts-to-1password" \
+  "$REPO_ROOT/scripts/configuration-profile-state" \
+  "$REPO_ROOT/scripts/configure-git-identity" \
+  "$REPO_ROOT/scripts/restore-filen-menubar-from-1password" \
+  "$REPO_ROOT/scripts/restore-gpg-from-1password" \
+  "$REPO_ROOT/scripts/restore-mail-accounts-from-1password" \
+  "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$REPO_ROOT/scripts/microsoft-native-passkey-readiness" \
+  "$REPO_ROOT/scripts/validate-filen-app-copy" \
+  "$REPO_ROOT/scripts/validate-mail-account-profile" \
+  "$REPO_ROOT/scripts/validate-mail-accounts-config" \
+  "$REPO_ROOT/scripts/verify-stream-sha256"; do
+  IFS= read -r script_shebang <"$private_script"
+  [[ "$script_shebang" == '#!/bin/bash -p' ]] || {
+    echo "private setup script does not use privileged Bash startup: $private_script" >&2
+    exit 1
+  }
+  if grep -Eq '^PATH=.*(HOME|/opt/homebrew)' "$private_script"; then
+    echo "private setup script includes a user-writable command directory: $private_script" >&2
+    exit 1
+  fi
+done
+
+# Dependency updates replace a source-controlled lock file, so they must use
+# the same protected-shell and trusted-PATH boundary as private restore tools.
+IFS= read -r update_shebang <"$UPDATE_SCRIPT"
+[[ "$update_shebang" == '#!/bin/bash -p' ]] || {
+  echo "dependency update script does not use protected Bash startup" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match the literal source-controlled helper path.
+grep -Fq 'source "$REPO_ROOT/scripts/trusted-path"' "$UPDATE_SCRIPT"
+grep -Fq 'mac_setup_harden_environment' "$UPDATE_SCRIPT"
+# shellcheck disable=SC2016 # Match the literal absolute command invocations.
+grep -Fq 'work_dir="$(/usr/bin/mktemp -d ' "$UPDATE_SCRIPT"
+# shellcheck disable=SC2016 # Match the literal absolute command invocations.
+grep -Fq 'lock_tmp="$(/usr/bin/mktemp ' "$UPDATE_SCRIPT"
+if grep -Eq '(^|[^/[:alnum:]_])mktemp([[:space:]]|$)' "$UPDATE_SCRIPT"; then
+  echo "dependency update script resolves mktemp through PATH" >&2
+  exit 1
+fi
+
+for stateful_script in "$UPDATE_SCRIPT" "$REBUILD_SCRIPT"; do
+  IFS= read -r stateful_shebang <"$stateful_script"
+  [[ "$stateful_shebang" == '#!/bin/bash -p' ]] || {
+    echo "state-changing helper does not use protected Bash startup" >&2
+    exit 1
+  }
+  # shellcheck disable=SC2016 # Match the literal source-controlled helper path.
+  grep -Fq 'source "$REPO_ROOT/scripts/trusted-path"' "$stateful_script"
+  grep -Fq 'mac_setup_harden_environment' "$stateful_script"
+done
+# shellcheck disable=SC2016 # Match the literal delegated validation command.
+grep -Fq '"$REPO_ROOT/scripts/validate"' "$REBUILD_SCRIPT"
+
+setup_help="$($SETUP_SCRIPT --help)"
+grep -Fq -- '-- <finish-setup options>' <<<"$setup_help"
+grep -Fq 'NIX_LAUNCHER="/nix/var/nix/profiles/default/bin/nix"' "$SETUP_SCRIPT"
+# The rebuild helper owns validation and filtered-source creation.
+# shellcheck disable=SC2016 # Match the literal delegated rebuild command.
+grep -Fq '"$CONFIG_DIR/scripts/rebuild" build' "$SETUP_SCRIPT"
+if grep -Fq 'scripts/flake-source' "$SETUP_SCRIPT"; then
+  echo "setup creates a local flake source before delegated validation" >&2
+  exit 1
+fi
+grep -Fq 'rev-parse --is-inside-work-tree' "$SETUP_SCRIPT"
+# shellcheck disable=SC2016 # Match the literal checkout-path expression.
+if grep -Fq '[[ -d "$CONFIG_DIR/.git" ]]' "$SETUP_SCRIPT"; then
+  echo "setup incorrectly requires a .git directory instead of accepting a linked worktree" >&2
+  exit 1
+fi
+if grep -Fq 'command -v nix' "$SETUP_SCRIPT"; then
+  echo "setup still trusts an ambient Nix command" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016 # Match the literal forwarding expression.
+grep -Fq '"$CONFIG_DIR/scripts/finish-setup" "${FINISH_SETUP_ARGS[@]}"' "$SETUP_SCRIPT"
+# shellcheck disable=SC2016 # Guard empty-array expansion for macOS Bash 3.2.
+grep -Fq 'if [[ "${#FINISH_SETUP_ARGS[@]}" -gt 0 ]]' "$SETUP_SCRIPT"
+if "$SETUP_SCRIPT" --apply -- --dry-run >/dev/null 2>&1; then
+  echo "setup accepted private-restore options without --provision" >&2
+  exit 1
+fi
+
+echo "guided finish-setup argument tests passed"

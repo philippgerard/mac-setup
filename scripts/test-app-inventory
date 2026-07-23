@@ -1,0 +1,113 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE_FILES=("$REPO_ROOT"/profiles/*.nix)
+HOMEBREW_MODULE="$REPO_ROOT/modules/darwin/homebrew.nix"
+NIX_PACKAGE_MODULE="$REPO_ROOT/modules/home/packages.nix"
+HOMEBREW_DRY_RUN="$REPO_ROOT/scripts/homebrew-dry-run"
+
+for unwanted_declaration in \
+  raycast replacicon whatcable \
+  microsoft-office microsoft-defender microsoft-onedrive onedrive \
+  microsoft-onenote conductor deliveries; do
+  if /usr/bin/grep -Fq "\"$unwanted_declaration\"" "${PROFILE_FILES[@]}"; then
+    echo "unwanted application remains declared: $unwanted_declaration" >&2
+    exit 1
+  fi
+done
+
+if /usr/bin/grep -Fiq 'xcodebuildmcp' "$HOMEBREW_MODULE"; then
+  echo "XcodeBuildMCP remains declared in the Homebrew baseline" >&2
+  exit 1
+fi
+
+for unwanted_mas_app in \
+  Collections Paperparrot 'Remind Me Faster' Trace 'WiFi Signal' \
+  'Microsoft Defender' OneDrive OneNote Conductor Deliveries Xcode; do
+  if /usr/bin/grep -Fq "\"$unwanted_mas_app\" =" "${PROFILE_FILES[@]}"; then
+    echo "unwanted Mac App Store app remains declared: $unwanted_mas_app" >&2
+    exit 1
+  fi
+done
+
+for required_cask in \
+  microsoft-excel microsoft-outlook microsoft-powerpoint microsoft-teams \
+  microsoft-word; do
+  required_count="$(
+    /usr/bin/grep -Fh "\"$required_cask\"" "${PROFILE_FILES[@]}" | \
+      /usr/bin/wc -l | /usr/bin/tr -d '[:space:]'
+  )"
+  [[ "$required_count" -eq 1 ]] || {
+    echo "required Microsoft cask must be declared exactly once: $required_cask" >&2
+    exit 1
+  }
+done
+
+for required_nix_package in cargo clippy rust-analyzer rustc rustfmt; do
+  if ! /usr/bin/grep -Eq \
+    "^[[:space:]]+${required_nix_package}[[:space:]]*$" \
+    "$NIX_PACKAGE_MODULE"; then
+    echo "required Nix development package is missing: $required_nix_package" >&2
+    exit 1
+  fi
+done
+
+for required_beam_package in \
+  beam.interpreters.erlang_29 \
+  beam.packages.erlang_29.elixir_1_20; do
+  if ! /usr/bin/grep -Fqx "    $required_beam_package" \
+    "$NIX_PACKAGE_MODULE"; then
+    echo "required pinned BEAM package is missing: $required_beam_package" >&2
+    exit 1
+  fi
+done
+
+test_dir="$(/usr/bin/mktemp -d \
+  "${TMPDIR:-/tmp}/mac-setup-homebrew-path-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_dir:-}" && -d "$test_dir" && ! -L "$test_dir" && \
+    "$test_dir" == "${TMPDIR:-/tmp}"/mac-setup-homebrew-path-test.* ]]; then
+    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+malicious_bin="$test_dir/malicious-bin"
+path_marker="$test_dir/untrusted-path-was-used"
+/bin/mkdir -m 700 "$malicious_bin"
+for command_name in brew cat dirname jq nix; do
+  printf '#!/bin/bash\nprintf used >>%q\nexit 97\n' "$path_marker" \
+    >"$malicious_bin/$command_name"
+  /bin/chmod 700 "$malicious_bin/$command_name"
+done
+
+help_output="$(PATH="$malicious_bin:$PATH" "$HOMEBREW_DRY_RUN" --help)"
+[[ "$help_output" == *"Nothing is installed or removed."* ]]
+[[ ! -e "$path_marker" ]] || {
+  echo "Homebrew dry-run helper executed a command from the inherited PATH" >&2
+  exit 1
+}
+
+IFS= read -r homebrew_script_shebang <"$HOMEBREW_DRY_RUN"
+[[ "$homebrew_script_shebang" == '#!/bin/bash -p' ]] || {
+  echo "Homebrew dry-run helper does not use protected Bash startup" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match literal trust-boundary commands.
+grep -Fq 'source "$REPO_ROOT/scripts/trusted-path"' "$HOMEBREW_DRY_RUN"
+grep -Fq 'mac_setup_harden_environment' "$HOMEBREW_DRY_RUN"
+grep -Fq 'BREW_BIN="/opt/homebrew/bin/brew"' "$HOMEBREW_DRY_RUN"
+# shellcheck disable=SC2016 # Match literal trusted command invocation.
+[[ "$(/usr/bin/grep -Fc '"$BREW_BIN"' "$HOMEBREW_DRY_RUN")" -eq 5 ]] || {
+  echo "Homebrew dry-run helper does not consistently use its trusted executable" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match literal trusted jq invocation.
+[[ "$(/usr/bin/grep -Fc '"$JQ_BIN"' "$HOMEBREW_DRY_RUN")" -eq 3 ]] || {
+  echo "Homebrew dry-run helper does not consistently use its trusted jq executable" >&2
+  exit 1
+}
+
+echo "application inventory selection tests passed"

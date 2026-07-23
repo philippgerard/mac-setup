@@ -1,0 +1,79 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+
+read_locked_nixpkgs() {
+  local lock_file="$REPO_ROOT/flake.lock"
+  local node_name
+
+  [[ -f "$lock_file" && ! -L "$lock_file" && -O "$lock_file" ]] || {
+    echo "flake.lock is unavailable or unsafe" >&2
+    return 1
+  }
+  node_name="$(/usr/bin/plutil -extract nodes.root.inputs.nixpkgs \
+    raw -o - "$lock_file")" || {
+    echo "flake.lock does not identify the root nixpkgs input" >&2
+    return 1
+  }
+  [[ "$node_name" =~ ^[A-Za-z0-9_-]+$ ]] || {
+    echo "flake.lock contains an unsafe nixpkgs node name" >&2
+    return 1
+  }
+
+  LOCKED_NIXPKGS_TYPE="$(/usr/bin/plutil -extract \
+    "nodes.$node_name.locked.type" raw -o - "$lock_file")"
+  LOCKED_NIXPKGS_OWNER="$(/usr/bin/plutil -extract \
+    "nodes.$node_name.locked.owner" raw -o - "$lock_file")"
+  LOCKED_NIXPKGS_REPO="$(/usr/bin/plutil -extract \
+    "nodes.$node_name.locked.repo" raw -o - "$lock_file")"
+  LOCKED_NIXPKGS_REV="$(/usr/bin/plutil -extract \
+    "nodes.$node_name.locked.rev" raw -o - "$lock_file")"
+  LOCKED_NIXPKGS_HASH="$(/usr/bin/plutil -extract \
+    "nodes.$node_name.locked.narHash" raw -o - "$lock_file")"
+
+  [[ "$LOCKED_NIXPKGS_TYPE" == github && \
+    "$LOCKED_NIXPKGS_OWNER" == NixOS && \
+    "$LOCKED_NIXPKGS_REPO" == nixpkgs && \
+    "$LOCKED_NIXPKGS_REV" =~ ^[0-9a-f]{40}$ && \
+    "$LOCKED_NIXPKGS_HASH" =~ ^sha256-[A-Za-z0-9+/]{43}=$ ]] || {
+    echo "flake.lock root nixpkgs pin is not an approved immutable source" >&2
+    return 1
+  }
+}
+
+if [[ "${1:-}" == "--check-lock" ]]; then
+  [[ $# -eq 1 ]] || {
+    echo "usage: scripts/run-with-validation-tools --check-lock" >&2
+    exit 2
+  }
+  read_locked_nixpkgs
+  echo "validation-tool lock source passed"
+  exit 0
+fi
+
+[[ $# -gt 0 ]] || {
+  echo "usage: scripts/run-with-validation-tools <command> [args...]" >&2
+  exit 2
+}
+
+missing_tools=()
+for command_name in fish gitleaks jq plutil rg shellcheck; do
+  command -v "$command_name" >/dev/null 2>&1 || \
+    missing_tools+=("$command_name")
+done
+if [[ "${#missing_tools[@]}" -eq 0 ]]; then
+  exec "$@"
+fi
+
+read_locked_nixpkgs
+NIX_BIN="$(mac_setup_trusted_nix)"
+validation_expression="let pkgs = import (builtins.fetchTarball { url = \"https://github.com/NixOS/nixpkgs/archive/$LOCKED_NIXPKGS_REV.tar.gz\"; sha256 = \"$LOCKED_NIXPKGS_HASH\"; }) { system = \"aarch64-darwin\"; }; in with pkgs; [ coreutils fish gitleaks jq ripgrep shellcheck ]"
+
+exec "$NIX_BIN" shell --impure --expr "$validation_expression" --command "$@"

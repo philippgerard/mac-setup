@@ -7,7 +7,19 @@ This repository defines a public, PII-free macOS baseline using Determinate Nix,
 ## Hard constraints
 
 - Never commit a real name, email address, SSH public key, GPG fingerprint, private hostname, absolute personal home path, token, credential, or private repository URL.
-- Private account metadata lives in `.local/config.json`, which is generated and ignored.
+- Private host metadata lives in `.local/config.json`, which is generated and ignored.
+- Validate its exact schema and current user/home/host values with
+  `scripts/validate-local-config`; build and switch must use one validated
+  snapshot.
+- Never pass the raw checkout to a `path:` flake command. Use
+  `scripts/flake-source`; ignored `.local` state must not enter the Nix store.
+- `scripts/flake-source` includes only Git-indexed paths. Mark reviewed new
+  public files with `git add -N` or stage them before validation. Public-safety
+  validation scans both working-tree and staged/index bytes. Once a real
+  staged tree change exists, its bytes, types, and executable modes must match
+  the working tree exactly.
+- Private Mail metadata and generated profiles live below
+  `~/Library/Application Support/mac-setup/`, outside the checkout.
 - Private Git identity lives in `~/.config/git/identity.inc`, populated from 1Password.
 - Private SSH hosts live below `~/.ssh/config.d/`.
 - Do not add Chezmoi or another dotfile manager.

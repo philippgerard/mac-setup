@@ -1,0 +1,491 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+for command_name in awk find jq mktemp plutil shasum; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-mail-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_dir:-}" ]]; then
+    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+at_sign='@'
+personal_address="personal${at_sign}example.test"
+secondary_address="secondary${at_sign}example.test"
+work_address="work${at_sign}example.test"
+valid_config="$test_dir/valid.json"
+reversed_config="$test_dir/reversed.json"
+single_config="$test_dir/single.json"
+exchange_only_config="$test_dir/exchange-only.json"
+mail_only_config="$test_dir/mail-only.json"
+profile_dir="$test_dir/profiles"
+profile_validator="$REPO_ROOT/scripts/validate-mail-account-profile"
+
+jq -n \
+  --arg personal_address "$personal_address" \
+  --arg secondary_address "$secondary_address" \
+  --arg work_address "$work_address" '
+  {
+    schema_version: 3,
+    accounts: [
+      {
+        type: "imap",
+        id: "personal-mail",
+        description: "Personal",
+        profile: {
+          display_name: "Mail: Personal",
+          identifier: "org.example.mac-setup.mail.personal",
+          uuid: "00000000-0000-4000-8000-000000000001"
+        },
+        payload: {
+          identifier: "org.example.mac-setup.mail.personal.account",
+          uuid: "00000000-0000-4000-8000-000000000002"
+        },
+        display_name: "Example Person",
+        email_address: $personal_address,
+        password_same_as_incoming: true,
+        incoming: {
+          authentication: "password",
+          hostname: "imap.personal.example.test",
+          port: 993,
+          use_ssl: true,
+          username: $personal_address
+        },
+        outgoing: {
+          authentication: "password",
+          hostname: "smtp.personal.example.test",
+          port: 465,
+          use_ssl: true,
+          username: $personal_address
+        },
+        services: {
+          caldav: {
+            authentication: "password",
+            description: "Personal Calendar and Reminders",
+            hostname: "dav.personal.example.test",
+            port: 443,
+            use_ssl: true,
+            username: $personal_address,
+            payload: {
+              identifier: "org.example.mac-setup.mail.personal.caldav",
+              uuid: "00000000-0000-4000-8000-000000000005"
+            }
+          },
+          carddav: {
+            authentication: "password",
+            description: "Personal Contacts",
+            hostname: "dav.personal.example.test",
+            port: 443,
+            use_ssl: true,
+            username: $personal_address,
+            payload: {
+              identifier: "org.example.mac-setup.mail.personal.carddav",
+              uuid: "00000000-0000-4000-8000-000000000006"
+            }
+          }
+        }
+      },
+      {
+        type: "imap",
+        id: "secondary-mail",
+        description: "Secondary",
+        profile: {
+          display_name: "Mail: Secondary",
+          identifier: "org.example.mac-setup.mail.secondary",
+          uuid: "00000000-0000-4000-8000-000000000007"
+        },
+        payload: {
+          identifier: "org.example.mac-setup.mail.secondary.account",
+          uuid: "00000000-0000-4000-8000-000000000008"
+        },
+        display_name: "Example Person",
+        email_address: $secondary_address,
+        password_same_as_incoming: true,
+        incoming: {
+          authentication: "password",
+          hostname: "imap.secondary.example.test",
+          port: 993,
+          use_ssl: true,
+          username: $secondary_address
+        },
+        outgoing: {
+          authentication: "password",
+          hostname: "smtp.secondary.example.test",
+          port: 465,
+          use_ssl: true,
+          username: $secondary_address
+        }
+      },
+      {
+        type: "exchange_oauth",
+        id: "work-mail",
+        description: "Work",
+        profile: {
+          display_name: "Mail: Work",
+          identifier: "org.example.mac-setup.mail.work",
+          uuid: "00000000-0000-4000-8000-000000000003"
+        },
+        payload: {
+          identifier: "org.example.mac-setup.mail.work.account",
+          uuid: "00000000-0000-4000-8000-000000000004"
+        },
+        email_address: $work_address,
+        username: $work_address
+      }
+    ]
+  }
+' >"$valid_config"
+chmod 600 "$valid_config"
+
+"$REPO_ROOT/scripts/validate-mail-accounts-config" "$valid_config" >/dev/null
+
+malicious_bin="$test_dir/malicious-bin"
+mkdir -m 700 "$malicious_bin"
+path_marker="$test_dir/untrusted-jq-was-used"
+printf '#!/bin/bash\nprintf used >%q\nexit 1\n' "$path_marker" >"$malicious_bin/jq"
+chmod 700 "$malicious_bin/jq"
+PATH="$malicious_bin:$PATH" \
+  "$REPO_ROOT/scripts/validate-mail-accounts-config" "$valid_config" >/dev/null
+[[ ! -e "$path_marker" ]] || {
+  echo "Mail validation executed a command from the inherited PATH" >&2
+  exit 1
+}
+
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$valid_config" "$profile_dir" >/dev/null
+
+[[ "$(/usr/bin/stat -f '%Lp' "$profile_dir")" == 700 ]]
+[[ "$(find "$profile_dir" -maxdepth 1 -type f -name '*.mobileconfig' | wc -l | tr -d '[:space:]')" == 2 ]]
+[[ "$(find "$profile_dir" -maxdepth 1 -type f -name '*.mobileconfig' -exec /usr/bin/basename {} \; | sort)" == $'personal-mail.mobileconfig\nsecondary-mail.mobileconfig' ]]
+[[ "$(cat "$profile_dir/.generated-profile-ids")" == $'personal-mail\nsecondary-mail' ]]
+[[ ! -e "$profile_dir/work-mail.mobileconfig" ]]
+
+for profile_file in "$profile_dir"/*.mobileconfig; do
+  plutil -lint "$profile_file" >/dev/null
+  [[ "$(/usr/bin/stat -f '%Lp' "$profile_file")" == 600 ]]
+  plutil -convert json -o - "$profile_file" | jq -e '
+    . as $profile |
+    ($profile.PayloadType == "Configuration")
+    and ($profile.PayloadScope == "User")
+    and ($profile.TargetDeviceType == 5)
+    and ($profile.PayloadContent | length >= 1)
+    and (all($profile.PayloadContent[];
+      (.PayloadType == "com.apple.mail.managed")
+      or (.PayloadType == "com.apple.caldav.account")
+      or (.PayloadType == "com.apple.carddav.account")
+    ))
+    and ([
+      $profile | .. | objects | keys[] |
+      select((test("(?i)(password|token|secret)")) and . != "OutgoingPasswordSameAsIncomingPassword")
+    ] | length == 0)
+  ' >/dev/null
+done
+
+plutil -convert json -o - "$profile_dir/personal-mail.mobileconfig" | jq -e \
+  --arg own_address "$personal_address" \
+  --arg secondary_address "$secondary_address" \
+  --arg work_address "$work_address" '
+  . as $profile |
+  ($profile.PayloadIdentifier == "org.example.mac-setup.mail.personal")
+  and ($profile.PayloadUUID == "00000000-0000-4000-8000-000000000001")
+  and ($profile.PayloadDisplayName == "Mail: Personal")
+  and ($profile.PayloadContent | length == 3)
+  and ($profile.PayloadContent[0].PayloadType == "com.apple.mail.managed")
+  and ($profile.PayloadContent[0].PayloadIdentifier == "org.example.mac-setup.mail.personal.account")
+  and ($profile.PayloadContent[0].PayloadUUID == "00000000-0000-4000-8000-000000000002")
+  and ($profile.PayloadContent[0].EmailAddress == $own_address)
+  and ($profile.PayloadContent[0].OutgoingPasswordSameAsIncomingPassword == true)
+  and ($profile.PayloadContent[1].PayloadType == "com.apple.caldav.account")
+  and ($profile.PayloadContent[1].PayloadIdentifier == "org.example.mac-setup.mail.personal.caldav")
+  and ($profile.PayloadContent[1].PayloadUUID == "00000000-0000-4000-8000-000000000005")
+  and ($profile.PayloadContent[1].CalDAVHostName == "dav.personal.example.test")
+  and ($profile.PayloadContent[1].CalDAVPort == 443)
+  and ($profile.PayloadContent[1].CalDAVUseSSL == true)
+  and ($profile.PayloadContent[1].CalDAVUsername == $own_address)
+  and (($profile.PayloadContent[1] | has("CalDAVPassword")) | not)
+  and (($profile.PayloadContent[1] | has("CalDAVPrincipalURL")) | not)
+  and ($profile.PayloadContent[2].PayloadType == "com.apple.carddav.account")
+  and ($profile.PayloadContent[2].PayloadIdentifier == "org.example.mac-setup.mail.personal.carddav")
+  and ($profile.PayloadContent[2].PayloadUUID == "00000000-0000-4000-8000-000000000006")
+  and ($profile.PayloadContent[2].CardDAVHostName == "dav.personal.example.test")
+  and ($profile.PayloadContent[2].CardDAVPort == 443)
+  and ($profile.PayloadContent[2].CardDAVUseSSL == true)
+  and ($profile.PayloadContent[2].CardDAVUsername == $own_address)
+  and (($profile.PayloadContent[2] | has("CardDAVPassword")) | not)
+  and (($profile.PayloadContent[2] | has("CardDAVPrincipalURL")) | not)
+  and ((tostring | contains($secondary_address)) | not)
+  and ((tostring | contains($work_address)) | not)
+' >/dev/null
+
+plutil -convert json -o - "$profile_dir/secondary-mail.mobileconfig" | jq -e \
+  --arg own_address "$secondary_address" \
+  --arg personal_address "$personal_address" \
+  --arg work_address "$work_address" '
+  . as $profile |
+  ($profile.PayloadIdentifier == "org.example.mac-setup.mail.secondary")
+  and ($profile.PayloadUUID == "00000000-0000-4000-8000-000000000007")
+  and ($profile.PayloadDisplayName == "Mail: Secondary")
+  and ($profile.PayloadContent | length == 1)
+  and ($profile.PayloadContent[0].PayloadType == "com.apple.mail.managed")
+  and ($profile.PayloadContent[0].PayloadIdentifier == "org.example.mac-setup.mail.secondary.account")
+  and ($profile.PayloadContent[0].PayloadUUID == "00000000-0000-4000-8000-000000000008")
+  and ($profile.PayloadContent[0].EmailAddress == $own_address)
+  and (($profile.PayloadContent[0] | has("OAuth")) | not)
+  and ((tostring | contains($personal_address)) | not)
+  and ((tostring | contains($work_address)) | not)
+' >/dev/null
+
+personal_hash="$(shasum -a 256 "$profile_dir/personal-mail.mobileconfig" | awk '{print $1}')"
+secondary_hash="$(shasum -a 256 "$profile_dir/secondary-mail.mobileconfig" | awk '{print $1}')"
+
+"$profile_validator" \
+  "personal-mail" "$valid_config" "$profile_dir/personal-mail.mobileconfig" >/dev/null
+"$profile_validator" \
+  "secondary-mail" "$valid_config" "$profile_dir/secondary-mail.mobileconfig" >/dev/null
+if "$profile_validator" \
+  "work-mail" "$valid_config" "$profile_dir/personal-mail.mobileconfig" >/dev/null 2>&1; then
+  echo "profile validation accepted an Exchange account without an IMAP profile" >&2
+  exit 1
+fi
+clean_profile_copy="$test_dir/clean-profile-copy.mobileconfig"
+cp "$profile_dir/personal-mail.mobileconfig" "$clean_profile_copy"
+chmod 600 "$clean_profile_copy"
+interrupted_secondary_copy="$test_dir/interrupted-secondary.mobileconfig"
+cp "$profile_dir/secondary-mail.mobileconfig" "$interrupted_secondary_copy"
+chmod 600 "$interrupted_secondary_copy"
+"$profile_validator" "personal-mail" "$valid_config" "$clean_profile_copy" >/dev/null
+
+expect_profile_rejected() {
+  local fixture_name="$1"
+  local candidate="$test_dir/$fixture_name.mobileconfig"
+
+  cp "$profile_dir/personal-mail.mobileconfig" "$candidate"
+  chmod 600 "$candidate"
+  shift
+  plutil "$@" "$candidate"
+  if "$profile_validator" "personal-mail" "$valid_config" "$candidate" >/dev/null 2>&1; then
+    echo "tampered Mail profile fixture was accepted: $fixture_name" >&2
+    exit 1
+  fi
+}
+
+# Keep the top-level profile identity intact while changing nested payload data.
+expect_profile_rejected \
+  "wrong-payload-uuid" \
+  -replace PayloadContent.0.PayloadUUID -string "00000000-0000-4000-8000-000000000099"
+expect_profile_rejected \
+  "wrong-payload-type" \
+  -replace PayloadContent.0.PayloadType -string "com.apple.carddav.account"
+expect_profile_rejected \
+  "wrong-server" \
+  -replace PayloadContent.0.IncomingMailServerHostName -string "wrong.example.test"
+
+jq '.accounts |= reverse' "$valid_config" >"$reversed_config"
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$reversed_config" "$profile_dir" >/dev/null
+[[ "$(shasum -a 256 "$profile_dir/personal-mail.mobileconfig" | awk '{print $1}')" == "$personal_hash" ]]
+[[ "$(shasum -a 256 "$profile_dir/secondary-mail.mobileconfig" | awk '{print $1}')" == "$secondary_hash" ]]
+[[ ! -e "$profile_dir/work-mail.mobileconfig" ]]
+
+# A work profile generated by an older release remains owned through its
+# manifest and is safely retired when the same Exchange metadata is restored.
+printf '%s\n' personal-mail secondary-mail work-mail \
+  >"$profile_dir/.generated-profile-ids"
+chmod 600 "$profile_dir/.generated-profile-ids"
+cp "$clean_profile_copy" "$profile_dir/work-mail.mobileconfig"
+chmod 600 "$profile_dir/work-mail.mobileconfig"
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$valid_config" "$profile_dir" >/dev/null
+[[ "$(cat "$profile_dir/.generated-profile-ids")" == $'personal-mail\nsecondary-mail' ]]
+[[ ! -e "$profile_dir/work-mail.mobileconfig" ]]
+
+expect_rejected() {
+  local candidate="$1"
+  if "$REPO_ROOT/scripts/validate-mail-accounts-config" "$candidate" >/dev/null 2>&1; then
+    echo "invalid Mail account fixture was accepted" >&2
+    exit 1
+  fi
+}
+
+permissive_config="$test_dir/permissive-config.json"
+cp "$valid_config" "$permissive_config"
+chmod 640 "$permissive_config"
+expect_rejected "$permissive_config"
+
+symlinked_config="$test_dir/symlinked-config.json"
+ln -s "$valid_config" "$symlinked_config"
+expect_rejected "$symlinked_config"
+
+permissive_config_dir="$test_dir/permissive-config-dir"
+mkdir -m 700 "$permissive_config_dir"
+cp "$valid_config" "$permissive_config_dir/mail-accounts.json"
+chmod 755 "$permissive_config_dir"
+expect_rejected "$permissive_config_dir/mail-accounts.json"
+
+jq '.accounts[1].id = .accounts[0].id' "$valid_config" >"$test_dir/duplicate-id.json"
+expect_rejected "$test_dir/duplicate-id.json"
+
+jq '.accounts[1].profile.uuid = .accounts[0].payload.uuid' "$valid_config" >"$test_dir/reused-uuid.json"
+expect_rejected "$test_dir/reused-uuid.json"
+
+jq '.accounts[0].services.caldav.payload.uuid = .accounts[0].payload.uuid' "$valid_config" >"$test_dir/reused-dav-uuid.json"
+expect_rejected "$test_dir/reused-dav-uuid.json"
+
+jq '.accounts[1].profile.identifier = .accounts[0].payload.identifier' "$valid_config" >"$test_dir/reused-identifier.json"
+expect_rejected "$test_dir/reused-identifier.json"
+
+jq '.accounts[0].id = "../escape"' "$valid_config" >"$test_dir/unsafe-id.json"
+expect_rejected "$test_dir/unsafe-id.json"
+
+jq '.accounts[0].incoming.port = 0' "$valid_config" >"$test_dir/bad-port.json"
+expect_rejected "$test_dir/bad-port.json"
+
+jq '.accounts[0].services.carddav.port = 0' "$valid_config" >"$test_dir/bad-dav-port.json"
+expect_rejected "$test_dir/bad-dav-port.json"
+
+jq '.accounts[0].incoming.password = "not-a-real-secret"' "$valid_config" >"$test_dir/embedded-secret.json"
+expect_rejected "$test_dir/embedded-secret.json"
+
+jq '.accounts[0].services.caldav.password = "not-a-real-secret"' "$valid_config" >"$test_dir/embedded-dav-secret.json"
+expect_rejected "$test_dir/embedded-dav-secret.json"
+
+jq 'del(.accounts[0].services) | .accounts = [.accounts[0]]' "$valid_config" >"$mail_only_config"
+"$REPO_ROOT/scripts/validate-mail-accounts-config" "$mail_only_config" >/dev/null
+
+if "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$test_dir/embedded-secret.json" "$profile_dir" >/dev/null 2>&1; then
+  echo "profile generation accepted invalid Mail metadata" >&2
+  exit 1
+fi
+[[ "$(shasum -a 256 "$profile_dir/personal-mail.mobileconfig" | awk '{print $1}')" == "$personal_hash" ]]
+[[ "$(shasum -a 256 "$profile_dir/secondary-mail.mobileconfig" | awk '{print $1}')" == "$secondary_hash" ]]
+[[ ! -e "$profile_dir/work-mail.mobileconfig" ]]
+
+# Exchange metadata remains valid for native Internet Accounts setup, but it
+# must never produce a managed EWS configuration profile.
+jq '.accounts = [.accounts[] | select(.id == "work-mail")]' \
+  "$valid_config" >"$exchange_only_config"
+"$REPO_ROOT/scripts/validate-mail-accounts-config" "$exchange_only_config" >/dev/null
+exchange_only_profile_dir="$test_dir/exchange-only-profiles"
+"$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$exchange_only_config" "$exchange_only_profile_dir" >/dev/null
+[[ -z "$(find "$exchange_only_profile_dir" -maxdepth 1 -type f -name '*.mobileconfig' -print -quit)" ]]
+[[ ! -s "$exchange_only_profile_dir/.generated-profile-ids" ]]
+
+printf 'preserve unrelated files\n' >"$profile_dir/keep.txt"
+jq '.accounts = [.accounts[0]]' "$valid_config" >"$single_config"
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$single_config" "$profile_dir" >/dev/null
+[[ -f "$profile_dir/personal-mail.mobileconfig" ]]
+[[ ! -e "$profile_dir/secondary-mail.mobileconfig" ]]
+[[ ! -e "$profile_dir/work-mail.mobileconfig" ]]
+[[ -f "$profile_dir/keep.txt" ]]
+
+# A regular file that is absent from both manifests remains protected.
+cp "$interrupted_secondary_copy" "$profile_dir/secondary-mail.mobileconfig"
+if "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$valid_config" "$profile_dir" >/dev/null 2>&1; then
+  echo "profile generation overwrote an untracked regular file" >&2
+  exit 1
+fi
+/bin/rm -f -- "$profile_dir/secondary-mail.mobileconfig"
+
+# Simulate interruption after the pending manifest and a newly generated file
+# were published but before the completed manifest replaced the old one.
+printf '%s\n' personal-mail secondary-mail >"$profile_dir/.generated-profile-ids.pending"
+chmod 600 "$profile_dir/.generated-profile-ids.pending"
+cp "$interrupted_secondary_copy" "$profile_dir/secondary-mail.mobileconfig"
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$valid_config" "$profile_dir" >/dev/null
+[[ ! -e "$profile_dir/.generated-profile-ids.pending" ]]
+[[ "$(cat "$profile_dir/.generated-profile-ids")" == $'personal-mail\nsecondary-mail' ]]
+[[ "$(shasum -a 256 "$profile_dir/secondary-mail.mobileconfig" | awk '{print $1}')" == "$secondary_hash" ]]
+[[ ! -e "$profile_dir/work-mail.mobileconfig" ]]
+[[ -f "$profile_dir/keep.txt" ]]
+
+# If a later desired config drops an ID that existed only in an interrupted
+# transaction, recovery must remove its stale generated profile too.
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$single_config" "$profile_dir" >/dev/null
+printf '%s\n' personal-mail secondary-mail >"$profile_dir/.generated-profile-ids.pending"
+chmod 600 "$profile_dir/.generated-profile-ids.pending"
+cp "$interrupted_secondary_copy" "$profile_dir/secondary-mail.mobileconfig"
+if MAC_SETUP_TEST_STOP_AFTER_PROFILE_PENDING=1 \
+  "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+    "$single_config" "$profile_dir" >/dev/null 2>&1; then
+  echo "profile generation test hook did not simulate interruption" >&2
+  exit 1
+fi
+[[ "$(cat "$profile_dir/.generated-profile-ids.pending")" == $'personal-mail\nsecondary-mail' ]]
+[[ -f "$profile_dir/secondary-mail.mobileconfig" ]]
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$single_config" "$profile_dir" >/dev/null
+[[ ! -e "$profile_dir/.generated-profile-ids.pending" ]]
+[[ ! -e "$profile_dir/secondary-mail.mobileconfig" ]]
+
+# Restore the two-profile state for the unsafe-destination regression below.
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$valid_config" "$profile_dir" >/dev/null
+
+external_dir="$test_dir/external-destination"
+mkdir "$external_dir"
+/bin/rm -f -- "$profile_dir/secondary-mail.mobileconfig"
+ln -s "$external_dir" "$profile_dir/secondary-mail.mobileconfig"
+if "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$valid_config" "$profile_dir" >/dev/null 2>&1; then
+  echo "profile generation followed an unsafe destination symlink" >&2
+  exit 1
+fi
+[[ -L "$profile_dir/secondary-mail.mobileconfig" ]]
+[[ -z "$(find "$external_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]
+unlink "$profile_dir/secondary-mail.mobileconfig"
+
+permissive_profile_parent="$test_dir/permissive-profile-parent"
+mkdir -m 755 "$permissive_profile_parent"
+if "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$valid_config" "$permissive_profile_parent/profiles" >/dev/null 2>&1; then
+  echo "profile generation accepted a permissive output parent" >&2
+  exit 1
+fi
+
+private_profile_parent="$test_dir/private-profile-parent"
+mkdir -m 700 "$private_profile_parent"
+permissive_profile_dir="$private_profile_parent/profiles"
+mkdir -m 755 "$permissive_profile_dir"
+if "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$valid_config" "$permissive_profile_dir" >/dev/null 2>&1; then
+  echo "profile generation accepted a permissive output directory" >&2
+  exit 1
+fi
+
+metadata_test_dir="$test_dir/metadata-permissions"
+mkdir -m 700 "$metadata_test_dir"
+metadata_profile_dir="$metadata_test_dir/profiles"
+"$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$valid_config" "$metadata_profile_dir" >/dev/null
+chmod 640 "$metadata_profile_dir/.mac-setup-generated"
+if "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$valid_config" "$metadata_profile_dir" >/dev/null 2>&1; then
+  echo "profile generation accepted a permissive ownership marker" >&2
+  exit 1
+fi
+chmod 600 "$metadata_profile_dir/.mac-setup-generated"
+chmod 640 "$metadata_profile_dir/.generated-profile-ids"
+if "$REPO_ROOT/scripts/generate-mail-account-profiles" \
+  "$valid_config" "$metadata_profile_dir" >/dev/null 2>&1; then
+  echo "profile generation accepted a permissive manifest" >&2
+  exit 1
+fi
+
+chmod 755 "$profile_dir"
+if "$profile_validator" \
+  "personal-mail" "$valid_config" "$profile_dir/personal-mail.mobileconfig" >/dev/null 2>&1; then
+  echo "profile validation accepted a permissive profile directory" >&2
+  exit 1
+fi
+chmod 700 "$profile_dir"
+
+echo "separate account service profile tests passed"

@@ -1,0 +1,95 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+PROFILE_FILE="$REPO_ROOT/configuration-profiles/disable-icloud-mail-calendar-contacts.mobileconfig"
+STATE_SCRIPT="$REPO_ROOT/scripts/configuration-profile-state"
+TEST_SCRIPT="$REPO_ROOT/scripts/test-icloud-service-restrictions-profile"
+OPEN_IF_NEEDED=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/open-icloud-service-restrictions-profile [--if-needed]
+
+Open the reviewed iCloud service restrictions profile for manual approval.
+With --if-needed, do nothing when that profile is already installed.
+EOF
+}
+
+case "${1:-}" in
+  "")
+    ;;
+  --if-needed)
+    OPEN_IF_NEEDED=1
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "unknown argument: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+[[ $# -le 1 ]] || {
+  echo "too many arguments" >&2
+  usage >&2
+  exit 2
+}
+
+[[ "$(/usr/bin/uname -s)" == "Darwin" ]] || {
+  echo "this configuration profile can be opened only on macOS" >&2
+  exit 1
+}
+
+if command -v jq >/dev/null 2>&1; then
+  "$TEST_SCRIPT" >/dev/null
+elif [[ -x /nix/var/nix/profiles/default/bin/nix ]]; then
+  # shellcheck source=scripts/trusted-nix
+  source "$REPO_ROOT/scripts/trusted-nix"
+  nix_bin="$(mac_setup_trusted_nix)"
+  flake_source="$("$REPO_ROOT/scripts/flake-source")"
+  "$nix_bin" develop "$flake_source#validation" \
+    --command "$TEST_SCRIPT" >/dev/null
+else
+  echo "cannot validate the profile because neither jq nor Nix is available" >&2
+  exit 1
+fi
+
+if [[ "$OPEN_IF_NEEDED" -eq 1 ]]; then
+  profile_state="$($STATE_SCRIPT "$PROFILE_FILE")"
+  case "$profile_state" in
+    exact)
+      echo "The iCloud service restrictions profile is already installed; nothing to do."
+      exit 0
+      ;;
+    missing)
+      ;;
+    different)
+      echo "A different revision of the iCloud restrictions profile is installed." >&2
+      echo "Run this helper without --if-needed to review the update explicitly." >&2
+      exit 1
+      ;;
+    *)
+      echo "unexpected configuration profile state" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+/usr/bin/open "$PROFILE_FILE"
+
+cat <<'EOF'
+The iCloud service restrictions profile was opened.
+Review and install it in System Settings > General > Device Management.
+
+While installed, it disables only iCloud Mail, Calendar, and Contacts.
+It does not restrict other iCloud services, including Reminders.
+Remove the profile in Device Management to make those services available again.
+EOF

@@ -1,18 +1,58 @@
-#!/bin/bash
+#!/bin/bash -p
 
 set -euo pipefail
+umask 077
 
-PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
-export PATH
+SCRIPT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(/usr/bin/dirname "$SCRIPT_DIR")"
+# shellcheck source=scripts/trusted-path
+source "$SCRIPT_DIR/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/git-identity-policy
+source "$SCRIPT_DIR/git-identity-policy"
+# shellcheck source=scripts/private-state-paths
+source "$SCRIPT_DIR/private-state-paths"
+# shellcheck source=scripts/trusted-1password
+source "$SCRIPT_DIR/trusted-1password"
+
+CHECK_PATHS_ONLY=0
+if [[ $# -gt 0 ]]; then
+  if [[ $# -eq 1 && "$1" == "--check-paths" ]]; then
+    CHECK_PATHS_ONLY=1
+  else
+    echo "usage: scripts/configure-git-identity [--check-paths]" >&2
+    exit 2
+  fi
+fi
 
 IDENTITY_ITEM="${MAC_SETUP_GIT_IDENTITY_ITEM:-Mac Setup Git Identity}"
 IDENTITY_REF="${MAC_SETUP_GIT_IDENTITY_REF:-}"
 VAULT="${MAC_SETUP_1PASSWORD_VAULT:-}"
-CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+ONEPASSWORD_ACCOUNT_VALUE="${MAC_SETUP_1PASSWORD_ACCOUNT:-}"
+unset XDG_CONFIG_HOME
+CONFIG_HOME="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$HOME/.config" "Git identity config directory")"
 GIT_PRIVATE_DIR="$CONFIG_HOME/git"
 IDENTITY_FILE="$GIT_PRIVATE_DIR/identity.inc"
 PUBLIC_IDENTITY_FILE="$GIT_PRIVATE_DIR/public-identity.inc"
 ALLOWED_SIGNERS_FILE="$GIT_PRIVATE_DIR/allowed_signers"
+
+if [[ "$CHECK_PATHS_ONLY" -eq 1 ]]; then
+  exit 0
+fi
+
+mac_setup_sanitize_1password_environment
+if [[ -n "$ONEPASSWORD_ACCOUNT_VALUE" ]]; then
+  [[ "$ONEPASSWORD_ACCOUNT_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+    echo "unsafe 1Password account ID or shorthand" >&2
+    exit 1
+  }
+  export OP_ACCOUNT="$ONEPASSWORD_ACCOUNT_VALUE"
+fi
+[[ "$VAULT" != *$'\n'* && "$VAULT" != *$'\r'* ]] || {
+  echo "unsafe 1Password vault name" >&2
+  exit 1
+}
 
 for command_name in op git jq mktemp; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -51,28 +91,46 @@ else
   public_signing_key="$(field_value public_signing_key)"
 fi
 
-[[ -n "$git_name" && "$git_name" != *$'\n'* ]] || { echo "invalid name field" >&2; exit 1; }
-[[ "$git_email" == *@* && "$git_email" != *$'\n'* ]] || { echo "invalid email field" >&2; exit 1; }
-[[ "$git_signing_key" =~ ^(ssh-|ecdsa-)[^[:space:]]+[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || {
-  echo "signing_key must contain a complete SSH public key" >&2
-  exit 1
-}
-[[ -n "$public_name" && "$public_name" != *$'\n'* ]] || { echo "invalid public_name field" >&2; exit 1; }
-[[ "$public_email" == *@users.noreply.github.com && "$public_email" != *$'\n'* ]] || {
-  echo "public_email must be a GitHub noreply address" >&2
-  exit 1
-}
-[[ "$public_signing_key" =~ ^(ssh-|ecdsa-)[^[:space:]]+[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || {
-  echo "public_signing_key must contain a complete SSH public key" >&2
-  exit 1
-}
+mac_setup_validate_git_identity_fields \
+  "$git_name" "$git_email" "$git_signing_key" \
+  "$public_name" "$public_email" "$public_signing_key"
 
-install -d -m 700 "$GIT_PRIVATE_DIR"
-umask 077
+if [[ -e "$GIT_PRIVATE_DIR" || -L "$GIT_PRIVATE_DIR" ]]; then
+  [[ -d "$GIT_PRIVATE_DIR" && ! -L "$GIT_PRIVATE_DIR" && -O "$GIT_PRIVATE_DIR" ]] || {
+    echo "Git identity directory is unsafe" >&2
+    exit 1
+  }
+  /bin/chmod 700 "$GIT_PRIVATE_DIR"
+else
+  [[ -d "$CONFIG_HOME" && ! -L "$CONFIG_HOME" && -O "$CONFIG_HOME" ]] || {
+    echo "configuration directory is unsafe or missing" >&2
+    exit 1
+  }
+  /usr/bin/install -d -m 700 "$GIT_PRIVATE_DIR"
+fi
+for private_file in "$IDENTITY_FILE" "$PUBLIC_IDENTITY_FILE" "$ALLOWED_SIGNERS_FILE"; do
+  if [[ -e "$private_file" || -L "$private_file" ]]; then
+    [[ -f "$private_file" && ! -L "$private_file" && -O "$private_file" ]] || {
+      echo "existing Git identity file is unsafe" >&2
+      exit 1
+    }
+  fi
+done
+
 identity_tmp="$(mktemp "$GIT_PRIVATE_DIR/.identity.XXXXXX")"
 public_identity_tmp="$(mktemp "$GIT_PRIVATE_DIR/.public-identity.XXXXXX")"
 signers_tmp="$(mktemp "$GIT_PRIVATE_DIR/.signers.XXXXXX")"
-trap 'rm -f "$identity_tmp" "$public_identity_tmp" "$signers_tmp"' EXIT
+cleanup() {
+  local temporary_file
+  for temporary_file in \
+    "${identity_tmp:-}" "${public_identity_tmp:-}" "${signers_tmp:-}"; do
+    if [[ -n "$temporary_file" ]]; then
+      /bin/rm -f -- "$temporary_file" >/dev/null 2>&1 || true
+    fi
+  done
+  return 0
+}
+trap cleanup EXIT
 
 git config --file "$identity_tmp" user.name "$git_name"
 git config --file "$identity_tmp" user.email "$git_email"
@@ -87,8 +145,11 @@ git config --file "$public_identity_tmp" user.signingKey "$public_signing_key"
 
 chmod 600 "$identity_tmp" "$public_identity_tmp" "$signers_tmp"
 mv "$identity_tmp" "$IDENTITY_FILE"
+identity_tmp=""
 mv "$public_identity_tmp" "$PUBLIC_IDENTITY_FILE"
+public_identity_tmp=""
 mv "$signers_tmp" "$ALLOWED_SIGNERS_FILE"
+signers_tmp=""
 trap - EXIT
 
 echo "Private and public-repository Git identities were written to local files."

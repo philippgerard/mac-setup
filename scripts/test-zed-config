@@ -1,0 +1,82 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLAKE_REF="$("$REPO_ROOT/scripts/flake-source")"
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+
+for command_name in bash jq mktemp shasum; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+BASH_BIN="$(command -v bash)"
+"$BASH_BIN" -c '(( BASH_VERSINFO[0] >= 4 ))' || {
+  echo "Bash 4 or newer is required for Home Manager activation testing" >&2
+  exit 1
+}
+
+activation_script="$(
+  "$NIX_BIN" eval --raw \
+    "$FLAKE_REF#darwinConfigurations.mini.config.home-manager.users.macuser.home.activation.configureZed.data"
+)"
+
+TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-zed-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${TEST_DIR:-}" && -d "$TEST_DIR" && ! -L "$TEST_DIR" ]]; then
+    /bin/rm -rf -- "$TEST_DIR" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+TEST_HOME="$TEST_DIR/home"
+/bin/mkdir -m 700 "$TEST_HOME"
+
+run_activation() {
+  HOME="$TEST_HOME" DRY_RUN_CMD="" "$BASH_BIN" -eu -o pipefail -c \
+    "$activation_script"
+}
+
+run_activation
+settings_file="$TEST_HOME/.config/zed/settings.json"
+[[ -f "$settings_file" && ! -L "$settings_file" && -O "$settings_file" ]] || {
+  echo "Zed activation did not seed a user-owned regular settings file" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$settings_file")" == "600" ]] || {
+  echo "Zed settings do not use mode 0600" >&2
+  exit 1
+}
+jq -e 'type == "object"' "$settings_file" >/dev/null
+
+edited_file="$TEST_DIR/edited-settings.json"
+jq '.mac_setup_preservation_test = true' "$settings_file" >"$edited_file"
+/bin/mv "$edited_file" "$settings_file"
+/bin/chmod 644 "$settings_file"
+edited_hash="$(shasum -a 256 "$settings_file" | /usr/bin/awk '{print $1}')"
+
+run_activation
+second_hash="$(shasum -a 256 "$settings_file" | /usr/bin/awk '{print $1}')"
+[[ "$second_hash" == "$edited_hash" ]] || {
+  echo "Zed activation replaced an existing user edit" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$settings_file")" == "600" ]] || {
+  echo "Zed activation did not restore private settings permissions" >&2
+  exit 1
+}
+
+real_settings="$TEST_DIR/real-settings.json"
+/bin/mv "$settings_file" "$real_settings"
+/bin/ln -s "$real_settings" "$settings_file"
+if run_activation >/dev/null 2>&1; then
+  echo "Zed activation accepted a symlinked settings file" >&2
+  exit 1
+fi
+
+echo "Zed writable seed configuration tests passed"

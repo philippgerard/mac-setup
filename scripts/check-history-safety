@@ -1,36 +1,337 @@
-#!/bin/bash
+#!/bin/bash -p
 
 set -euo pipefail
+umask 077
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-git
+source "$REPO_ROOT/scripts/trusted-git"
 cd "$REPO_ROOT"
+
+PUBLIC_REPOSITORY_URL="https://github.com/philippgerard/mac-setup"
+PUBLIC_IDENTITY_NAME="${PUBLIC_REPOSITORY_URL#https://github.com/}"
+PUBLIC_IDENTITY_NAME="${PUBLIC_IDENTITY_NAME%%/*}"
 
 TARGET="${1:---all}"
 if [[ "$TARGET" == "--all" ]]; then
   revision_args=(--all)
 else
-  git rev-parse --verify "$TARGET^{commit}" >/dev/null
+  mac_setup_safe_git "$REPO_ROOT" \
+    rev-parse --verify "$TARGET^{commit}" >/dev/null
   revision_args=("$TARGET")
 fi
 
-non_noreply_emails="$(git log "${revision_args[@]}" --format='%ae' | sort -u | grep -vc '@users.noreply.github.com' || true)"
-historical_identity_hits="$({
-  git rev-list "${revision_args[@]}" |
-    while read -r commit; do
-      git grep -Il -E \
-        'user(Name|Email)[[:space:]]*=|user\.signingKey[[:space:]]*=|(ssh-ed25519|ssh-rsa)[[:space:]]+[A-Za-z0-9+/=]{20,}' \
-        "$commit" -- '*.nix' '*.md' '*.sh' 2>/dev/null || true
-    done |
-    sort -u |
-    wc -l |
-    tr -d '[:space:]'
-})"
+commit_identity_lines="$(mac_setup_safe_git "$REPO_ROOT" \
+  log "${revision_args[@]}" --format='%an%x09%ae%n%cn%x09%ce')" || {
+  echo "history-safety could not read commit identities" >&2
+  exit 1
+}
+invalid_commit_identities="$(printf '%s\n' "$commit_identity_lines" |
+  /usr/bin/awk -F '\t' -v public_name="$PUBLIC_IDENTITY_NAME" '
+    BEGIN {
+      at = "@"
+      canonical = public_name at "users.noreply.github.com"
+      github_email = "noreply" at "github.com"
+    }
+    function allowed(name, email, plus_position) {
+      if (name == "GitHub" && email == github_email) return 1
+      if (name != public_name) return 0
+      if (email == canonical) return 1
+      plus_position = index(email, "+")
+      if (plus_position <= 1 || substr(email, plus_position + 1) != canonical) return 0
+      return substr(email, 1, plus_position - 1) ~ /^[0-9]+$/
+    }
+    !allowed($1, $2) { invalid++ }
+    END { print invalid + 0 }
+  ')"
 
-if [[ "$non_noreply_emails" -ne 0 || "$historical_identity_hits" -ne 0 ]]; then
+tag_identity_lines="$(mac_setup_safe_git "$REPO_ROOT" for-each-ref \
+  --format='%(objecttype)%09%(taggername)%09%(taggeremail)' refs/tags)" || {
+  echo "history-safety could not read tag identities" >&2
+  exit 1
+}
+invalid_tag_identities="$(printf '%s\n' "$tag_identity_lines" |
+  /usr/bin/awk -F '\t' -v public_name="$PUBLIC_IDENTITY_NAME" '
+    BEGIN {
+      at = "@"
+      canonical = public_name at "users.noreply.github.com"
+      github_email = "noreply" at "github.com"
+    }
+    $1 != "tag" { next }
+    {
+      email = $3
+      sub(/^</, "", email)
+      sub(/>$/, "", email)
+      allowed = 0
+      if ($2 == "GitHub" && email == github_email) allowed = 1
+      if ($2 == public_name && email == canonical) allowed = 1
+      plus_position = index(email, "+")
+      if ($2 == public_name && plus_position > 1 &&
+          substr(email, plus_position + 1) == canonical &&
+          substr(email, 1, plus_position - 1) ~ /^[0-9]+$/) allowed = 1
+      if (!allowed) invalid++
+    }
+    END { print invalid + 0 }
+  ')"
+
+grep_string_matches() {
+  local pattern="$1"
+  local value="$2"
+  local output
+  local status
+
+  if output="$(printf '%s\n' "$value" |
+    /usr/bin/grep -a -E -o -e "$pattern" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || {
+    echo "history-safety path scanner failed" >&2
+    return 2
+  }
+  return 1
+}
+
+history_matches() {
+  local pattern="$1"
+  local commit
+  local commit_list
+  local matches
+  local path
+  local scan_failed=0
+  local status
+  local tree_paths_file
+
+  commit_list="$(mac_setup_safe_git "$REPO_ROOT" \
+    rev-list "${revision_args[@]}")" || {
+    echo "history-safety could not enumerate commits" >&2
+    return 2
+  }
+  tree_paths_file="$(/usr/bin/mktemp \
+    "${TMPDIR:-/tmp}/mac-setup-history-paths.XXXXXX")"
+
+  while IFS= read -r commit; do
+    [[ -n "$commit" ]] || continue
+    if matches="$(mac_setup_safe_git "$REPO_ROOT" \
+      grep -a -h -o -E -e "$pattern" "$commit" -- . 2>&1)"; then
+      printf '%s\n' "$matches"
+    else
+      status=$?
+      if [[ "$status" -ne 1 ]]; then
+        echo "history-safety tree scanner failed" >&2
+        scan_failed=1
+        break
+      fi
+    fi
+
+    if ! mac_setup_safe_git "$REPO_ROOT" \
+      ls-tree -r -z --name-only "$commit" >"$tree_paths_file"; then
+      echo "history-safety could not enumerate tree paths" >&2
+      scan_failed=1
+      break
+    fi
+    while IFS= read -r -d '' path; do
+      if matches="$(grep_string_matches "$pattern" "$path")"; then
+        printf '%s\n' "$matches"
+      else
+        status=$?
+        if [[ "$status" -ne 1 ]]; then
+          scan_failed=1
+          break
+        fi
+      fi
+    done <"$tree_paths_file"
+    [[ "$scan_failed" -eq 0 ]] || break
+  done <<<"$commit_list"
+
+  /bin/rm -f -- "$tree_paths_file"
+  [[ "$scan_failed" -eq 0 ]] || return 2
+}
+
+metadata_matches() {
+  local metadata_text
+  local object_type
+  local output
+  local pattern="$1"
+  local status
+  local tag_ref
+  local tag_refs
+
+  metadata_text="$(mac_setup_safe_git "$REPO_ROOT" \
+    log "${revision_args[@]}" --format='%B')" || {
+    echo "history-safety could not read commit messages" >&2
+    return 2
+  }
+  tag_refs="$(mac_setup_safe_git "$REPO_ROOT" for-each-ref \
+    --format='%(objecttype)%09%(refname)' refs/tags)" || {
+    echo "history-safety could not enumerate tags" >&2
+    return 2
+  }
+  while IFS=$'\t' read -r object_type tag_ref; do
+    [[ "$object_type" == "tag" ]] || continue
+    metadata_text+=$'\n'"$(mac_setup_safe_git "$REPO_ROOT" \
+      for-each-ref --format='%(contents)' "$tag_ref")" || {
+      echo "history-safety could not read a tag message" >&2
+      return 2
+    }
+  done <<<"$tag_refs"
+
+  if output="$(printf '%s\n' "$metadata_text" |
+    /usr/bin/grep -a -E -o -e "$pattern" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || {
+    echo "history-safety metadata scanner failed" >&2
+    return 2
+  }
+  return 1
+}
+
+count_disallowed_matches() {
+  local allow_kind="$1"
+  local matches="$2"
+  local count=0
+  local match
+
+  while IFS= read -r match; do
+    [[ -n "$match" ]] || continue
+    case "$allow_kind:$match" in
+      email:git@github.com|home:/Users/macuser)
+        ;;
+      *)
+        count=$((count + 1))
+        ;;
+    esac
+  done <<<"$matches"
+  printf '%s\n' "$count"
+}
+
+collect_history_matches() {
+  local pattern="$1"
+  local output
+
+  if output="$(history_matches "$pattern")"; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+  echo "history-safety historical scan failed" >&2
+  exit 1
+}
+
+collect_metadata_matches() {
+  local pattern="$1"
+  local output
+  local status
+
+  if output="$(metadata_matches "$pattern")"; then
+    printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || {
+    echo "history-safety metadata scan failed" >&2
+    exit 1
+  }
+  printf '\n'
+}
+
+count_historical_private_paths() {
+  local commit
+  local commit_list
+  local count=0
+  local path
+  local tree_paths_file
+
+  commit_list="$(mac_setup_safe_git "$REPO_ROOT" \
+    rev-list "${revision_args[@]}")" || return 2
+  tree_paths_file="$(/usr/bin/mktemp \
+    "${TMPDIR:-/tmp}/mac-setup-private-history-paths.XXXXXX")"
+  while IFS= read -r commit; do
+    [[ -n "$commit" ]] || continue
+    if ! mac_setup_safe_git "$REPO_ROOT" \
+      ls-tree -r -z --name-only "$commit" >"$tree_paths_file"; then
+      /bin/rm -f -- "$tree_paths_file"
+      return 2
+    fi
+    while IFS= read -r -d '' path; do
+      case "$path" in
+        .[lL][oO][cC][aA][lL]|.[lL][oO][cC][aA][lL]/*)
+          count=$((count + 1))
+          ;;
+      esac
+    done <"$tree_paths_file"
+  done <<<"$commit_list"
+  /bin/rm -f -- "$tree_paths_file"
+  printf '%s\n' "$count"
+}
+
+email_pattern='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+home_pattern='/Users/[A-Za-z0-9._-]+'
+key_pattern='(ssh-(rsa|ed25519)|ecdsa-[^[:space:]]+)[[:space:]]+[A-Za-z0-9+/=]{20,}'
+secret_pattern='(BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,})'
+identity_pattern='(userName[[:space:]]*=|userEmail[[:space:]]*=|user\.signingKey[[:space:]]*=)'
+
+historical_email_hits="$(count_disallowed_matches email \
+  "$(collect_history_matches "$email_pattern")")"
+historical_home_hits="$(count_disallowed_matches home \
+  "$(collect_history_matches "$home_pattern")")"
+historical_key_hits="$(count_disallowed_matches none \
+  "$(collect_history_matches "$key_pattern")")"
+historical_secret_hits="$(count_disallowed_matches none \
+  "$(collect_history_matches "$secret_pattern")")"
+historical_identity_hits="$(count_disallowed_matches none \
+  "$(collect_history_matches "$identity_pattern")")"
+historical_content_hits="$((
+  historical_email_hits +
+  historical_home_hits +
+  historical_key_hits +
+  historical_secret_hits +
+  historical_identity_hits
+))"
+
+metadata_email_hits="$(count_disallowed_matches email \
+  "$(collect_metadata_matches "$email_pattern")")"
+metadata_home_hits="$(count_disallowed_matches home \
+  "$(collect_metadata_matches "$home_pattern")")"
+metadata_key_hits="$(count_disallowed_matches none \
+  "$(collect_metadata_matches "$key_pattern")")"
+metadata_secret_hits="$(count_disallowed_matches none \
+  "$(collect_metadata_matches "$secret_pattern")")"
+metadata_identity_hits="$(count_disallowed_matches none \
+  "$(collect_metadata_matches "$identity_pattern")")"
+metadata_content_hits="$((
+  metadata_email_hits +
+  metadata_home_hits +
+  metadata_key_hits +
+  metadata_secret_hits +
+  metadata_identity_hits
+))"
+historical_private_path_hits="$(count_historical_private_paths)" || {
+  echo "history-safety private-path scan failed" >&2
+  exit 1
+}
+
+if [[ "$invalid_commit_identities" -ne 0 || \
+  "$invalid_tag_identities" -ne 0 || \
+  "$historical_content_hits" -ne 0 || \
+  "$metadata_content_hits" -ne 0 || \
+  "$historical_private_path_hits" -ne 0 ]]; then
   cat >&2 <<EOF
 history-safety scan failed
-  non-noreply author identities: $non_noreply_emails
-  historical identity/key file hits: $historical_identity_hits
+  invalid commit author/committer identities: $invalid_commit_identities
+  invalid annotated-tag identities: $invalid_tag_identities
+  historical tree/path sensitive-content hits: $historical_content_hits
+  historical private .local path hits: $historical_private_path_hits
+  commit/tag message sensitive-content hits: $metadata_content_hits
 
 Publish from a sanitized root commit or rewrite the public history after review.
 EOF

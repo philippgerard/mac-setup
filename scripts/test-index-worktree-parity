@@ -1,0 +1,220 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-git
+source "$REPO_ROOT/scripts/trusted-git"
+
+if /usr/bin/grep -Fq 'write-tree' \
+  "$REPO_ROOT/scripts/check-index-worktree-parity"; then
+  echo "parity check must not materialize the index through write-tree" >&2
+  exit 1
+fi
+
+test_root="$(/usr/bin/mktemp -d /tmp/mac-setup-index-parity-test.XXXXXX)"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    -O "$test_root" && "$test_root" == /tmp/mac-setup-index-parity-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fixture_email="$(builtin printf '%s%s%s' 123+public @ users.noreply.github.com)"
+
+new_fixture() {
+  local fixture_name="$1"
+  fixture_repo="$test_root/$fixture_name"
+
+  /bin/mkdir -p "$fixture_repo/scripts" "$fixture_repo/nested"
+  /bin/cp "$REPO_ROOT/scripts/check-index-worktree-parity" \
+    "$REPO_ROOT/scripts/trusted-git" \
+    "$REPO_ROOT/scripts/trusted-path" \
+    "$fixture_repo/scripts/"
+  /bin/chmod 755 "$fixture_repo/scripts/check-index-worktree-parity"
+  mac_setup_safe_git "$fixture_repo" init -q --initial-branch=main
+  mac_setup_safe_git "$fixture_repo" config user.name Fixture
+  mac_setup_safe_git "$fixture_repo" config user.email "$fixture_email"
+  mac_setup_safe_git "$fixture_repo" config commit.gpgSign false
+  builtin printf '%s\n' 'baseline content' >"$fixture_repo/tracked.txt"
+  builtin printf '%s\n' '#!/bin/sh' 'exit 0' >"$fixture_repo/script.sh"
+  builtin printf '%s\n' 'nested baseline' >"$fixture_repo/nested/tracked.txt"
+  /bin/ln -s tracked.txt "$fixture_repo/tracked-link"
+  mac_setup_safe_git "$fixture_repo" add \
+    nested script.sh scripts tracked-link tracked.txt
+  mac_setup_safe_git "$fixture_repo" commit -q -m fixture
+}
+
+expect_pass() {
+  local description="$1"
+  local fixture_repo="$2"
+
+  if ! "$fixture_repo/scripts/check-index-worktree-parity" >/dev/null; then
+    builtin printf 'expected parity check to pass: %s\n' "$description" >&2
+    exit 1
+  fi
+}
+
+expect_failure() {
+  local description="$1"
+  local fixture_repo="$2"
+
+  if "$fixture_repo/scripts/check-index-worktree-parity" \
+    >/dev/null 2>&1; then
+    builtin printf 'expected parity check to fail: %s\n' "$description" >&2
+    exit 1
+  fi
+}
+
+new_fixture unstaged
+expect_pass "clean checkout" "$fixture_repo"
+builtin printf '%s\n' 'ordinary unstaged edit' >"$fixture_repo/tracked.txt"
+expect_pass "pure unstaged edit while the index equals HEAD" "$fixture_repo"
+builtin printf '%s\n' 'intent-to-add content' >"$fixture_repo/new-public-file"
+mac_setup_safe_git "$fixture_repo" add -N new-public-file
+expect_pass "intent-to-add development flow" "$fixture_repo"
+
+new_fixture staged-exact
+builtin printf '%s\n' 'exact staged edit' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+builtin printf '%s\n' 'intent-to-add beside a real staged edit' \
+  >"$fixture_repo/new-public-file"
+mac_setup_safe_git "$fixture_repo" add -N new-public-file
+expect_pass "exact staged tree with an intent-to-add entry" "$fixture_repo"
+
+new_fixture staged-empty
+builtin : >"$fixture_repo/staged-empty"
+mac_setup_safe_git "$fixture_repo" add staged-empty
+expect_pass "genuinely staged empty file" "$fixture_repo"
+builtin printf '%s\n' 'non-empty working bytes' >"$fixture_repo/staged-empty"
+expect_failure "staged empty file differs from working bytes" "$fixture_repo"
+
+new_fixture staged-bytes
+builtin printf '%s\n' 'staged bytes' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+builtin printf '%s\n' 'different working bytes' >"$fixture_repo/tracked.txt"
+expect_failure "working bytes differ from staged bytes" "$fixture_repo"
+
+new_fixture unusual-path
+unusual_path=$'tab\tand-newline\nfile'
+builtin printf '%s\n' 'unusual-path staged bytes' \
+  >"$fixture_repo/$unusual_path"
+mac_setup_safe_git "$fixture_repo" add -- "$unusual_path"
+expect_pass "exact staged bytes at a path containing tab and newline" \
+  "$fixture_repo"
+builtin printf '%s\n' 'unusual-path working mismatch' \
+  >"$fixture_repo/$unusual_path"
+expect_failure "working mismatch at a path containing tab and newline" \
+  "$fixture_repo"
+
+new_fixture clean-filter
+builtin printf '%s\n' 'filtered.txt filter=parity' \
+  >"$fixture_repo/.gitattributes"
+builtin printf '%s\n' 'raw bytes' >"$fixture_repo/filtered.txt"
+mac_setup_safe_git "$fixture_repo" config \
+  filter.parity.clean "/usr/bin/sed 's/raw/clean/g'"
+mac_setup_safe_git "$fixture_repo" config filter.parity.required true
+mac_setup_safe_git "$fixture_repo" add .gitattributes filtered.txt
+expect_failure "clean filter masks raw working bytes" "$fixture_repo"
+
+new_fixture clean-filter-side-effect
+filter_marker="$fixture_repo/clean-filter-ran"
+filter_script="$fixture_repo/clean-filter"
+builtin printf '%s\n' 'intent-filtered.txt filter=parity-marker' \
+  >"$fixture_repo/.gitattributes"
+builtin printf '%s\n' 'intent-to-add raw bytes' \
+  >"$fixture_repo/intent-filtered.txt"
+mac_setup_safe_git "$fixture_repo" add -N \
+  .gitattributes intent-filtered.txt
+builtin printf '%s\n' 'real staged bytes' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+# shellcheck disable=SC2016 # The generated filter expands its own argument.
+builtin printf '%s\n' \
+  '#!/bin/bash' \
+  'set -euo pipefail' \
+  'marker="$1"' \
+  '/usr/bin/touch "$marker"' \
+  '/bin/cat' \
+  >"$filter_script"
+/bin/chmod 755 "$filter_script"
+mac_setup_safe_git "$fixture_repo" config \
+  filter.parity-marker.clean "$filter_script $filter_marker"
+mac_setup_safe_git "$fixture_repo" config filter.parity-marker.required true
+expect_pass "intent-to-add entries do not execute clean filters" "$fixture_repo"
+[[ ! -e "$filter_marker" ]] || {
+  echo "parity check executed a repository-local clean filter" >&2
+  exit 1
+}
+
+new_fixture executable-exact
+/bin/chmod 755 "$fixture_repo/script.sh"
+mac_setup_safe_git "$fixture_repo" add script.sh
+expect_pass "matching staged executable mode" "$fixture_repo"
+
+new_fixture executable-mismatch
+mac_setup_safe_git "$fixture_repo" update-index --chmod=+x script.sh
+expect_failure "staged executable bit differs from the working tree" \
+  "$fixture_repo"
+
+new_fixture missing
+builtin printf '%s\n' 'staged before removal' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+/bin/rm -f -- "$fixture_repo/tracked.txt"
+expect_failure "indexed path is missing" "$fixture_repo"
+
+new_fixture leaf-type
+builtin printf '%s\n' 'staged regular file' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+/bin/rm -f -- "$fixture_repo/tracked.txt"
+/bin/ln -s script.sh "$fixture_repo/tracked.txt"
+expect_failure "indexed regular file was replaced by a symlink" "$fixture_repo"
+
+new_fixture symlink-target
+builtin printf '%s\n' 'real staged edit' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+/bin/rm -f -- "$fixture_repo/tracked-link"
+/bin/ln -s $'tracked.txt\n' "$fixture_repo/tracked-link"
+expect_failure "symlink target bytes differ at a trailing newline" \
+  "$fixture_repo"
+
+new_fixture symlink-ancestor
+builtin printf '%s\n' 'staged nested bytes' >"$fixture_repo/nested/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add nested/tracked.txt
+/bin/mv "$fixture_repo/nested" "$fixture_repo/saved-nested"
+/bin/ln -s saved-nested "$fixture_repo/nested"
+expect_failure "indexed path traverses a symlinked ancestor" "$fixture_repo"
+
+new_fixture unmerged
+mac_setup_safe_git "$fixture_repo" checkout -q -b conflict-side
+builtin printf '%s\n' 'side content' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+mac_setup_safe_git "$fixture_repo" commit -q -m side
+mac_setup_safe_git "$fixture_repo" checkout -q main
+builtin printf '%s\n' 'main content' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+mac_setup_safe_git "$fixture_repo" commit -q -m main
+if mac_setup_safe_git "$fixture_repo" merge --no-edit conflict-side \
+  >/dev/null 2>&1; then
+  echo "failed to create the unmerged-index fixture" >&2
+  exit 1
+fi
+expect_failure "unmerged index" "$fixture_repo"
+
+new_fixture redirected-index
+alternate_index="$test_root/alternate-index"
+/bin/cp "$fixture_repo/.git/index" "$alternate_index"
+builtin printf '%s\n' 'real staged bytes' >"$fixture_repo/tracked.txt"
+mac_setup_safe_git "$fixture_repo" add tracked.txt
+builtin printf '%s\n' 'hidden working mismatch' >"$fixture_repo/tracked.txt"
+if GIT_INDEX_FILE="$alternate_index" \
+  "$fixture_repo/scripts/check-index-worktree-parity" >/dev/null 2>&1; then
+  echo "parity check honored an ambient Git index redirect" >&2
+  exit 1
+fi
+
+echo "index/worktree parity tests passed"

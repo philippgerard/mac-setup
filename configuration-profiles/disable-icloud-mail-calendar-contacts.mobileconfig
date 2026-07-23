@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadDescription</key>
+      <string>Disables iCloud Mail, Calendar, and Contacts for this user.</string>
+      <key>PayloadDisplayName</key>
+      <string>Disable selected iCloud services</string>
+      <key>PayloadIdentifier</key>
+      <string>org.mac-setup.icloud-services.restrictions</string>
+      <key>PayloadType</key>
+      <string>com.apple.applicationaccess</string>
+      <key>PayloadUUID</key>
+      <string>81F44226-C073-46CE-8F48-52912B66676E</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>allowCloudAddressBook</key>
+      <false/>
+      <key>allowCloudCalendar</key>
+      <false/>
+      <key>allowCloudMail</key>
+      <false/>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>Disables only iCloud Mail, Calendar, and Contacts. Other iCloud services remain available.</string>
+  <key>PayloadDisplayName</key>
+  <string>Disable iCloud Mail, Calendar, and Contacts</string>
+  <key>PayloadIdentifier</key>
+  <string>org.mac-setup.icloud-services-disabled</string>
+  <key>PayloadOrganization</key>
+  <string>mac-setup</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadScope</key>
+  <string>User</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>C5BAD6A3-43F3-43BF-8FB9-BD449FF62C5B</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+  <key>TargetDeviceType</key>
+  <integer>5</integer>
+</dict>
+</plist>

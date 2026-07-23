@@ -1,0 +1,201 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+SCRIPT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$SCRIPT_DIR/trusted-path"
+mac_setup_harden_environment
+
+FIXTURE_DIR=""
+COMPANY_PORTAL_APP="/Applications/Company Portal.app"
+SSO_EXTENSION_ID="com.microsoft.CompanyPortalMac.ssoextension"
+SSO_TEAM_ID="UBF8T346G9"
+SSO_PAYLOAD_TYPE="com.apple.extensiblesso"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/microsoft-native-passkey-readiness [--fixture-dir <directory>]
+
+Report whether this Mac has the Microsoft broker prerequisites documented for
+FIDO2/passkey sign-in from native macOS applications. This is an advisory
+broker check: it cannot decide whether Apple Internet Accounts can use a
+system authentication session without that broker. The fixture option is for
+deterministic offline validation and does not change the live system.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fixture-dir)
+      [[ $# -ge 2 ]] || {
+        echo "missing value for --fixture-dir" >&2
+        exit 2
+      }
+      FIXTURE_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || {
+  echo "required command not found after activation: jq" >&2
+  exit 1
+}
+
+PROBE_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-microsoft-auth.XXXXXX")"
+/bin/chmod 700 "$PROBE_DIR"
+PLUGIN_OUTPUT="$PROBE_DIR/plugins.txt"
+ENROLLMENT_OUTPUT="$PROBE_DIR/enrollment.txt"
+PROFILES_PLIST="$PROBE_DIR/profiles.plist"
+PROFILES_JSON="$PROBE_DIR/profiles.json"
+
+# shellcheck disable=SC2329 # Invoked through the EXIT trap.
+cleanup() {
+  /bin/rm -f -- \
+    "$PLUGIN_OUTPUT" \
+    "$ENROLLMENT_OUTPUT" \
+    "$PROFILES_PLIST" \
+    "$PROFILES_JSON" \
+    >/dev/null 2>&1 || true
+  /bin/rmdir "$PROBE_DIR" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+SYSTEM_VERSION=""
+COMPANY_PORTAL_PRESENT=0
+
+if [[ -n "$FIXTURE_DIR" ]]; then
+  [[ -d "$FIXTURE_DIR" && ! -L "$FIXTURE_DIR" && -O "$FIXTURE_DIR" ]] || {
+    echo "fixture directory must be a user-owned directory, not a symlink" >&2
+    exit 1
+  }
+  FIXTURE_DIR="$(cd "$FIXTURE_DIR" && pwd -P)"
+  for fixture_name in \
+    system-version \
+    company-portal-present \
+    plugins.txt \
+    enrollment.txt \
+    profiles.plist; do
+    fixture_path="$FIXTURE_DIR/$fixture_name"
+    [[ -f "$fixture_path" && ! -L "$fixture_path" && -O "$fixture_path" ]] || {
+      echo "fixture input is missing or unsafe: $fixture_name" >&2
+      exit 1
+    }
+  done
+  SYSTEM_VERSION="$(<"$FIXTURE_DIR/system-version")"
+  case "$(<"$FIXTURE_DIR/company-portal-present")" in
+    yes) COMPANY_PORTAL_PRESENT=1 ;;
+    no) COMPANY_PORTAL_PRESENT=0 ;;
+    *)
+      echo "company-portal-present fixture must contain yes or no" >&2
+      exit 1
+      ;;
+  esac
+  /bin/cp "$FIXTURE_DIR/plugins.txt" "$PLUGIN_OUTPUT"
+  /bin/cp "$FIXTURE_DIR/enrollment.txt" "$ENROLLMENT_OUTPUT"
+  /bin/cp "$FIXTURE_DIR/profiles.plist" "$PROFILES_PLIST"
+else
+  SYSTEM_VERSION="$(/usr/bin/sw_vers -productVersion 2>/dev/null || true)"
+  if [[ -d "$COMPANY_PORTAL_APP" && ! -L "$COMPANY_PORTAL_APP" ]]; then
+    COMPANY_PORTAL_PRESENT=1
+  fi
+  /usr/bin/pluginkit -m -A -D -i "$SSO_EXTENSION_ID" \
+    >"$PLUGIN_OUTPUT" 2>/dev/null || true
+  /usr/bin/profiles status -type enrollment \
+    >"$ENROLLMENT_OUTPUT" 2>/dev/null || true
+  /usr/bin/profiles show -type configuration -output "$PROFILES_PLIST" \
+    >/dev/null 2>&1 || true
+fi
+
+MISSING_REQUIREMENTS=()
+
+if [[ "$SYSTEM_VERSION" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
+  SYSTEM_MAJOR="${SYSTEM_VERSION%%.*}"
+  if [[ "$SYSTEM_MAJOR" -lt 14 ]]; then
+    MISSING_REQUIREMENTS+=("macOS 14 or newer")
+  fi
+else
+  MISSING_REQUIREMENTS+=("a verifiable macOS 14-or-newer system version")
+fi
+
+if [[ "$COMPANY_PORTAL_PRESENT" -ne 1 ]]; then
+  MISSING_REQUIREMENTS+=("Microsoft Company Portal")
+fi
+
+if ! /usr/bin/grep -Eq \
+  '^[[:space:]]*[+][[:space:]]+com[.]microsoft[.]CompanyPortalMac[.]ssoextension([[:space:](]|$)' \
+  "$PLUGIN_OUTPUT"; then
+  MISSING_REQUIREMENTS+=("an enabled Microsoft Company Portal SSO extension")
+fi
+
+if ! /usr/bin/grep -Eq \
+  '^[[:space:]]*MDM enrollment:[[:space:]]*Yes([[:space:](]|$)' \
+  "$ENROLLMENT_OUTPUT"; then
+  MISSING_REQUIREMENTS+=("an active MDM enrollment")
+fi
+
+SSO_PAYLOAD_PRESENT=0
+if [[ -s "$PROFILES_PLIST" ]] && \
+  /usr/bin/plutil -lint "$PROFILES_PLIST" >/dev/null 2>&1 && \
+  /usr/bin/plutil -convert json -o "$PROFILES_JSON" "$PROFILES_PLIST" \
+    >/dev/null 2>&1 && \
+  jq -e \
+    --arg payload_type "$SSO_PAYLOAD_TYPE" \
+    --arg extension_id "$SSO_EXTENSION_ID" \
+    --arg team_id "$SSO_TEAM_ID" \
+    '.. | objects
+    | select(
+        .PayloadType? == $payload_type
+        and .ExtensionIdentifier? == $extension_id
+        and .TeamIdentifier? == $team_id
+      )' \
+    "$PROFILES_JSON" >/dev/null 2>&1; then
+  SSO_PAYLOAD_PRESENT=1
+fi
+if [[ "$SSO_PAYLOAD_PRESENT" -ne 1 ]]; then
+  MISSING_REQUIREMENTS+=("a detected Microsoft Extensible SSO configuration payload")
+fi
+
+if [[ "${#MISSING_REQUIREMENTS[@]}" -eq 0 ]]; then
+  echo "Microsoft native passkey broker signals: detected"
+  echo "This advisory result does not prove that Internet Accounts can use the key."
+  exit 0
+fi
+
+echo "Microsoft native passkey broker signals: incomplete or not visible" >&2
+echo "Undetected broker signals:" >&2
+for requirement in "${MISSING_REQUIREMENTS[@]}"; do
+  printf '  - %s\n' "$requirement" >&2
+done
+cat >&2 <<'EOF'
+
+This is an advisory broker check, not a verdict on Apple Internet Accounts.
+Configuration profiles can be scoped in ways that are not visible to this
+user-level probe, so both positive and negative results remain inconclusive.
+Microsoft documents Company Portal plus an approved MDM deployment for its
+native-app broker; installing Company Portal alone does not activate that
+broker. Apple and Microsoft do not document whether every Internet Accounts
+authentication session has equivalent FIDO2 support without it.
+
+Browser diagnostic: cancel the native sign-in and use a private browser window
+to open https://myaccount.microsoft.com/. At Microsoft's first sign-in page,
+choose Sign-in options and Security key before entering a password. If that
+works but the native flow does not, ask IT to inspect the exact sign-in and
+client policy. An organization-managed Microsoft SSO broker is one possible
+remediation, not something this repository can infer or enroll automatically.
+
+These checks are specific to FIDO2/passkey authentication. A tenant-approved
+PIV/certificate or other non-passkey flow can have different prerequisites.
+EOF
+exit 1

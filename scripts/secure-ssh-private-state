@@ -1,0 +1,48 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+if [[ $# -gt 1 ]]; then
+  echo "usage: scripts/secure-ssh-private-state [ssh-directory]" >&2
+  exit 2
+fi
+
+SSH_DIR="${1:-$HOME/.ssh}"
+[[ "$SSH_DIR" == /* && "$SSH_DIR" != *[[:cntrl:]]* ]] || {
+  echo "SSH directory must be an absolute path without control characters" >&2
+  exit 1
+}
+PRIVATE_HOST_DIR="$SSH_DIR/config.d"
+
+secure_directory() {
+  local directory="$1"
+  local parent_directory
+
+  if [[ -e "$directory" || -L "$directory" ]]; then
+    [[ -d "$directory" && ! -L "$directory" && -O "$directory" ]] || {
+      echo "SSH private-state directory is unsafe" >&2
+      return 1
+    }
+  else
+    parent_directory="$(/usr/bin/dirname "$directory")"
+    [[ -d "$parent_directory" && ! -L "$parent_directory" && \
+      -O "$parent_directory" ]] || {
+      echo "SSH private-state parent directory is unsafe" >&2
+      return 1
+    }
+    /usr/bin/install -d -m 0700 "$directory"
+  fi
+  /bin/chmod 0700 "$directory"
+}
+
+secure_directory "$SSH_DIR"
+secure_directory "$PRIVATE_HOST_DIR"
+
+while IFS= read -r -d '' private_host_file; do
+  [[ -f "$private_host_file" && ! -L "$private_host_file" && \
+    -O "$private_host_file" ]] || {
+    echo "SSH private host entries must be owned regular files, never symlinks" >&2
+    exit 1
+  }
+  /bin/chmod 0600 "$private_host_file"
+done < <(/usr/bin/find "$PRIVATE_HOST_DIR" -mindepth 1 -maxdepth 1 -print0)

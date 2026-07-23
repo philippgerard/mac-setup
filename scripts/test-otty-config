@@ -1,0 +1,54 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NORMALIZER="$REPO_ROOT/scripts/normalize-otty-config"
+TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-otty-test.XXXXXX")"
+
+cleanup() {
+  if [[ -n "${TEST_DIR:-}" && -d "$TEST_DIR" && ! -L "$TEST_DIR" ]]; then
+    /bin/rm -rf -- "$TEST_DIR" || true
+  fi
+  return 0
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+CONFIG_FILE="$TEST_DIR/config.toml"
+cat >"$CONFIG_FILE" <<'EOF'
+theme = "Paper"
+env = "TERM_FEATURE=enabled"
+env = "SHELL=/bin/zsh"
+env = "SHELL=/bin/zsh"
+font-size = 14
+EOF
+chmod 600 "$CONFIG_FILE"
+
+"$NORMALIZER" "$CONFIG_FILE" /run/current-system/sw/bin/fish
+first_hash="$(shasum -a 256 "$CONFIG_FILE" | awk '{print $1}')"
+"$NORMALIZER" "$CONFIG_FILE" /run/current-system/sw/bin/fish
+second_hash="$(shasum -a 256 "$CONFIG_FILE" | awk '{print $1}')"
+
+[[ "$first_hash" == "$second_hash" ]]
+[[ "$(grep -Fc 'env = "SHELL=/run/current-system/sw/bin/fish"' "$CONFIG_FILE")" -eq 1 ]]
+[[ "$(grep -Fc 'env = "TERM_FEATURE=enabled"' "$CONFIG_FILE")" -eq 1 ]]
+grep -Fq 'theme = "Paper"' "$CONFIG_FILE"
+grep -Fq 'font-size = 14' "$CONFIG_FILE"
+[[ "$(/usr/bin/stat -f '%Lp' "$CONFIG_FILE")" == 600 ]]
+
+LINK_PATH="$TEST_DIR/config-link.toml"
+ln -s "$CONFIG_FILE" "$LINK_PATH"
+if "$NORMALIZER" "$LINK_PATH" /run/current-system/sw/bin/fish >/dev/null 2>&1; then
+  echo "Otty normalizer accepted a symlink" >&2
+  exit 1
+fi
+
+if "$NORMALIZER" "$CONFIG_FILE" 'relative/shell' >/dev/null 2>&1; then
+  echo "Otty normalizer accepted an unsafe shell path" >&2
+  exit 1
+fi
+
+echo "Otty config normalization tests passed"

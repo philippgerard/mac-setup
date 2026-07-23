@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# Private Mail metadata is deliberately outside the repository. A raw `path:`
+# flake archives ignored files, so placing account metadata below the checkout
+# would make it world-readable in the Nix store.
+# shellcheck disable=SC2034 # These defaults are consumed by scripts that source this file.
+MAC_SETUP_PRIVATE_STATE_DIR_DEFAULT="${MAC_SETUP_PRIVATE_STATE_DIR:-$HOME/Library/Application Support/mac-setup}"
+MAC_SETUP_MAIL_CONFIG_FILE_DEFAULT="$MAC_SETUP_PRIVATE_STATE_DIR_DEFAULT/mail-accounts.json"
+MAC_SETUP_MAIL_PROFILE_DIR_DEFAULT="$MAC_SETUP_PRIVATE_STATE_DIR_DEFAULT/mail-profiles"
+
+mac_setup_canonical_private_path() {
+  local repository_root="$1"
+  local candidate_path="$2"
+  local path_label="$3"
+  local canonical_path
+  local final_component_path
+  local path_probe
+
+  [[ -n "$candidate_path" && "$candidate_path" == /* ]] || {
+    echo "$path_label must be an absolute path" >&2
+    return 1
+  }
+  if [[ "$candidate_path" =~ [[:cntrl:]] ]]; then
+    echo "$path_label contains unsafe control characters" >&2
+    return 1
+  fi
+  final_component_path="$candidate_path"
+  while [[ "$final_component_path" != "/" && "$final_component_path" == */ ]]; do
+    final_component_path="${final_component_path%/}"
+  done
+  [[ ! -L "$final_component_path" ]] || {
+    echo "$path_label must not be a symlink" >&2
+    return 1
+  }
+  command -v realpath >/dev/null 2>&1 || {
+    echo "required command not found after activation: realpath" >&2
+    return 1
+  }
+
+  canonical_path="$(realpath -m -- "$candidate_path")" || {
+    echo "$path_label could not be canonicalized" >&2
+    return 1
+  }
+  if [[ "$canonical_path" =~ [[:cntrl:]] ]]; then
+    echo "$path_label resolves to a path containing unsafe control characters" >&2
+    return 1
+  fi
+  case "$canonical_path" in
+    "$repository_root"|"$repository_root"/*)
+      echo "$path_label must remain outside the mac-setup checkout" >&2
+      return 1
+      ;;
+  esac
+
+  # realpath preserves the caller's letter case on the default case-insensitive
+  # macOS filesystem. Compare every existing ancestor by filesystem identity so
+  # alternate casing and filesystem aliases cannot bypass the checkout guard.
+  path_probe="$canonical_path"
+  while :; do
+    if [[ ( -e "$path_probe" || -L "$path_probe" ) && \
+      "$path_probe" -ef "$repository_root" ]]; then
+      echo "$path_label must remain outside the mac-setup checkout" >&2
+      return 1
+    fi
+    [[ "$path_probe" != "/" ]] || break
+    path_probe="$(/usr/bin/dirname "$path_probe")"
+  done
+
+  printf '%s\n' "$canonical_path"
+}

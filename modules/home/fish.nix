@@ -97,7 +97,11 @@
 
       # User-installed tools and pnpm globals
       set -gx PNPM_HOME "$HOME/Library/pnpm"
-      fish_add_path "$HOME/.local/bin" "$HOME/.cargo/bin" "$HOME/bin" "$PNPM_HOME"
+      # pnpm 11 stores global executables below PNPM_HOME/bin.
+      if contains -- "$PNPM_HOME" $fish_user_paths
+          set -U fish_user_paths (string match --invert --entire -- "$PNPM_HOME" $fish_user_paths)
+      end
+      fish_add_path "$HOME/.local/bin" "$HOME/.cargo/bin" "$HOME/bin" "$PNPM_HOME/bin"
 
       # fnm (Node version manager) with auto-switching
       if type -q fnm
@@ -111,6 +115,11 @@
       if test -f ~/.orbstack/shell/init2.fish
           source ~/.orbstack/shell/init2.fish
       end
+
+      # Keep reviewed user launchers ahead of fnm/npm globals and integrations.
+      # In particular, this makes the pinned standalone Filen launcher win over
+      # an obsolete npm-global copy left by an earlier activation.
+      fish_add_path --path --move "$HOME/.local/bin"
 
     '';
 

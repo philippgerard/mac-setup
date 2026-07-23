@@ -1,0 +1,52 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/git-identity-policy
+source "$REPO_ROOT/scripts/git-identity-policy"
+
+public_name="$(mac_setup_public_identity_name)"
+private_email="$(printf '%s%s%s' private @ example.invalid)"
+public_email="$(printf '%s%s%s%s' 123+ "$public_name" @ users.noreply.github.com)"
+wrong_public_email="$(printf '%s%s%s' 123+other @ users.noreply.github.com)"
+invalid_private_email="private user${private_email#private}"
+key_type="ssh-ed25519"
+key_body="AAAAC3NzaC1lZDI1NTE5AAAAIFixtureOnlyPublicKeyMaterial"
+private_key="$key_type $key_body private"
+public_key="$key_type $key_body public"
+
+expect_rejected() {
+  if mac_setup_validate_git_identity_fields "$@" >/dev/null 2>&1; then
+    echo "Git identity policy accepted an unsafe field set" >&2
+    exit 1
+  fi
+}
+
+mac_setup_validate_git_identity_fields \
+  'Private Alias' "$private_email" "$private_key" \
+  "$public_name" "$public_email" "$public_key"
+
+expect_rejected \
+  $'Private Alias\rInjected' "$private_email" "$private_key" \
+  "$public_name" "$public_email" "$public_key"
+expect_rejected \
+  'Private Alias' "$invalid_private_email" "$private_key" \
+  "$public_name" "$public_email" "$public_key"
+expect_rejected \
+  'Private Alias' "$private_email" "$private_key"$'\nssh-ed25519 injected' \
+  "$public_name" "$public_email" "$public_key"
+expect_rejected \
+  'Private Alias' "$private_email" "$private_key" \
+  'different-public-name' "$public_email" "$public_key"
+expect_rejected \
+  'Private Alias' "$private_email" "$private_key" \
+  "$public_name" "$private_email" "$public_key"
+expect_rejected \
+  'Private Alias' "$private_email" "$private_key" \
+  "$public_name" "$wrong_public_email" "$public_key"
+expect_rejected \
+  'Private Alias' "$private_email" "$private_key" \
+  "$public_name" "$public_email" "$public_key"$'\rInjected'
+
+echo "Git identity policy tests passed"

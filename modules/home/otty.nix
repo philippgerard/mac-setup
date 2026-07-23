@@ -1,7 +1,11 @@
-{ ... }:
+{ config, lib, pkgs, ... }:
 
-{
-  xdg.configFile."otty/config.toml".text = ''
+let
+  initialConfig = pkgs.writeText "otty-initial-config.toml" ''
+    # GUI sessions can retain the pre-activation SHELL value until logout.
+    command = "/run/current-system/sw/bin/fish"
+    env = "SHELL=/run/current-system/sw/bin/fish"
+
     theme = "Paper"
     theme-dark = "Nord"
 
@@ -34,5 +38,60 @@
     clipboard-trim-trailing-spaces = true
     text-blink = true
     cursor-style = "bar"
+  '';
+in
+{
+  # A future xdg.configFile/home.file declaration would turn this back into a
+  # read-only Nix-store link and break Otty's Settings UI.
+  assertions = [
+    {
+      assertion = !(builtins.hasAttr ".config/otty/config.toml" config.home.file);
+      message = "Otty config must remain a writable seed-once file";
+    }
+  ];
+
+  # Otty writes appearance changes to config.toml itself. Seed a regular file
+  # once instead of exposing an immutable Home Manager symlink into the Nix
+  # store, then leave all user-owned appearance settings untouched.
+  home.activation.configureOtty = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+    otty_config_dir="$HOME/.config/otty"
+    otty_config_file="$otty_config_dir/config.toml"
+    otty_cli="/Applications/Otty.app/Contents/MacOS/otty-cli"
+    otty_normalizer="${../../scripts/normalize-otty-config}"
+
+    if [[ -e "$otty_config_dir" || -L "$otty_config_dir" ]]; then
+      if [[ ! -d "$otty_config_dir" || -L "$otty_config_dir" || ! -O "$otty_config_dir" ]]; then
+        echo "Otty config must be a user-owned directory, not a symlink" >&2
+        exit 1
+      fi
+      $DRY_RUN_CMD ${pkgs.coreutils}/bin/chmod 0700 "$otty_config_dir"
+    else
+      $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -d -m 0700 "$otty_config_dir"
+    fi
+
+    if [[ ! -e "$otty_config_file" && ! -L "$otty_config_file" ]]; then
+      $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -m 0600 \
+        ${initialConfig} "$otty_config_file"
+    elif [[ -f "$otty_config_file" && ! -L "$otty_config_file" && -O "$otty_config_file" ]]; then
+      $DRY_RUN_CMD ${pkgs.coreutils}/bin/chmod 0600 "$otty_config_file"
+    elif [[ -v DRY_RUN && -L "$otty_config_file" ]]; then
+      echo "Otty's managed config link would be replaced by a writable file"
+    else
+      echo "Otty config must be a user-owned regular file, not a symlink" >&2
+      exit 1
+    fi
+
+    # Keep Fish as Otty's shell without resetting theme, font, or layout edits.
+    if [[ -x "$otty_cli" && -f "$otty_config_file" && ! -L "$otty_config_file" ]]; then
+      $DRY_RUN_CMD "$otty_cli" --config-file "$otty_config_file" \
+        config set command /run/current-system/sw/bin/fish
+    fi
+
+    # Otty's CLI appends repeatable `env` keys. Normalize only SHELL so that
+    # activation is idempotent while preserving every other user setting.
+    if [[ -f "$otty_config_file" && ! -L "$otty_config_file" ]]; then
+      $DRY_RUN_CMD "$otty_normalizer" \
+        "$otty_config_file" /run/current-system/sw/bin/fish
+    fi
   '';
 }

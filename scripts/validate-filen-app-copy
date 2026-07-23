@@ -1,0 +1,56 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: validate-filen-app-copy <immutable-app> <copied-app>" >&2
+  exit 2
+fi
+
+EXPECTED_APP="$1"
+COPIED_APP="$2"
+RELATIVE_EXECUTABLE="Contents/MacOS/filen-menubar"
+EXPECTED_EXECUTABLE="$EXPECTED_APP/$RELATIVE_EXECUTABLE"
+COPIED_EXECUTABLE="$COPIED_APP/$RELATIVE_EXECUTABLE"
+
+[[ -d "$EXPECTED_APP" && ! -L "$EXPECTED_APP" && \
+  -f "$EXPECTED_EXECUTABLE" && ! -L "$EXPECTED_EXECUTABLE" && \
+  -x "$EXPECTED_EXECUTABLE" ]] || {
+  echo "the immutable Filen Menubar application is unavailable or unsafe" >&2
+  exit 1
+}
+[[ -d "$COPIED_APP" && ! -L "$COPIED_APP" && -O "$COPIED_APP" ]] || {
+  echo "the copied Filen Menubar application must be a user-owned directory, not a symlink" >&2
+  exit 1
+}
+[[ -f "$COPIED_EXECUTABLE" && ! -L "$COPIED_EXECUTABLE" && \
+  -O "$COPIED_EXECUTABLE" && -x "$COPIED_EXECUTABLE" ]] || {
+  echo "the copied Filen Menubar executable is unavailable or unsafe" >&2
+  exit 1
+}
+
+copied_app_mode="$(/usr/bin/stat -f '%Lp' "$COPIED_APP")"
+copied_executable_mode="$(/usr/bin/stat -f '%Lp' "$COPIED_EXECUTABLE")"
+[[ "$copied_app_mode" =~ ^[0-7]{3,4}$ && \
+  "$copied_executable_mode" =~ ^[0-7]{3,4}$ ]] || {
+  echo "the copied Filen Menubar application has unsupported permissions" >&2
+  exit 1
+}
+(( (8#$copied_app_mode & 8#22) == 0 && \
+  (8#$copied_executable_mode & 8#22) == 0 )) || {
+  echo "the copied Filen Menubar application is writable outside its owner" >&2
+  exit 1
+}
+
+/usr/bin/cmp -s "$EXPECTED_EXECUTABLE" "$COPIED_EXECUTABLE" || {
+  echo "the copied Filen Menubar executable differs from the pinned application" >&2
+  exit 1
+}
+/usr/bin/codesign --verify --deep --strict "$EXPECTED_APP" >/dev/null 2>&1 || {
+  echo "the pinned Filen Menubar code signature is invalid" >&2
+  exit 1
+}
+/usr/bin/codesign --verify --deep --strict "$COPIED_APP" >/dev/null 2>&1 || {
+  echo "the copied Filen Menubar code signature is invalid" >&2
+  exit 1
+}

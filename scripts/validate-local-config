@@ -1,0 +1,128 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+if [[ $# -ne 4 ]]; then
+  echo "usage: validate-local-config <file> <username> <home> <host>" >&2
+  exit 2
+fi
+
+config_file="$1"
+expected_username="$2"
+expected_home="$3"
+expected_host="$4"
+
+[[ "$expected_username" =~ ^[A-Za-z_][A-Za-z0-9._-]*$ ]] || {
+  echo "expected local username is invalid" >&2
+  exit 1
+}
+[[ "$expected_home" == /* && "$expected_home" != *$'\n'* && \
+  "$expected_home" != *$'\r'* ]] || {
+  echo "expected local home directory is invalid" >&2
+  exit 1
+}
+[[ "$expected_host" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || {
+  echo "expected local hostname is invalid" >&2
+  exit 1
+}
+[[ "$(/usr/bin/id -un)" == "$expected_username" ]] || {
+  echo "local metadata username does not identify the current user" >&2
+  exit 1
+}
+[[ "$HOME" == "$expected_home" ]] || {
+  echo "local metadata home does not match the current process" >&2
+  exit 1
+}
+
+user_record="$(/usr/bin/dscl . -read "/Users/$expected_username" NFSHomeDirectory)" || {
+  echo "could not read the current user's home directory" >&2
+  exit 1
+}
+case "$user_record" in
+  "NFSHomeDirectory: "*) record_home="${user_record#NFSHomeDirectory: }" ;;
+  *)
+    echo "current user record has an unexpected home-directory format" >&2
+    exit 1
+    ;;
+esac
+[[ "$record_home" == "$expected_home" ]] || {
+  echo "local metadata home does not match the current user record" >&2
+  exit 1
+}
+
+[[ -f "$config_file" && ! -L "$config_file" && -O "$config_file" ]] || {
+  echo "private local host metadata is unsafe" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$config_file")" == "600" ]] || {
+  echo "private local host metadata must have mode 0600" >&2
+  exit 1
+}
+
+temp_base="${TMPDIR:-/tmp}"
+temp_base="${temp_base%/}"
+test_dir="$(/usr/bin/mktemp -d "$temp_base/mac-setup-local-config.XXXXXX")"
+config_copy="$test_dir/config.json"
+cleanup() {
+  if [[ -n "${test_dir:-}" && -d "$test_dir" && ! -L "$test_dir" && \
+    "$test_dir" == "$temp_base"/mac-setup-local-config.* ]]; then
+    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+/bin/chmod 700 "$test_dir"
+/bin/cp "$config_file" "$config_copy"
+/bin/chmod 600 "$config_copy"
+
+first_non_whitespace="$(LC_ALL=C /usr/bin/awk '
+  {
+    line = $0
+    sub(/^[[:space:]]+/, "", line)
+    if (length(line) > 0) {
+      print substr(line, 1, 1)
+      exit
+    }
+  }
+' "$config_copy")"
+[[ "$first_non_whitespace" == "{" ]] || {
+  echo "private local host metadata must be a JSON object" >&2
+  exit 1
+}
+/usr/bin/plutil -convert xml1 "$config_copy"
+
+field_matches() {
+  local actual_file="$test_dir/actual"
+  local expected_file="$test_dir/expected"
+  local field_name="$1"
+  local expected_value="$2"
+
+  /usr/bin/plutil -extract "$field_name" raw -expect string -n \
+    "$config_copy" >"$actual_file" 2>/dev/null || return 1
+  printf '%s' "$expected_value" >"$expected_file"
+  /usr/bin/cmp -s "$actual_file" "$expected_file"
+}
+
+field_matches username "$expected_username" || {
+  echo "private local host metadata has the wrong username" >&2
+  exit 1
+}
+field_matches homeDirectory "$expected_home" || {
+  echo "private local host metadata has the wrong home directory" >&2
+  exit 1
+}
+field_matches hostName "$expected_host" || {
+  echo "private local host metadata has the wrong hostname" >&2
+  exit 1
+}
+
+/usr/bin/plutil -remove username "$config_copy"
+/usr/bin/plutil -remove homeDirectory "$config_copy"
+/usr/bin/plutil -remove hostName "$config_copy"
+remaining_json="$(/usr/bin/plutil -convert json -o - -- "$config_copy")"
+[[ "$remaining_json" == "{}" ]] || {
+  echo "private local host metadata contains unrecognized fields" >&2
+  exit 1
+}
+
+echo "private local host metadata is valid"

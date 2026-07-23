@@ -1,0 +1,285 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SOURCE_SCRIPT="$REPO_ROOT/scripts/flake-source"
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+
+unset MAC_SETUP_PRIVATE_STATE_DIR
+# shellcheck source=scripts/private-state-paths
+source "$REPO_ROOT/scripts/private-state-paths"
+expected_private_state_dir="$HOME/Library/Application Support/mac-setup"
+[[ "$MAC_SETUP_PRIVATE_STATE_DIR_DEFAULT" == "$expected_private_state_dir" && \
+  "$MAC_SETUP_MAIL_CONFIG_FILE_DEFAULT" == "$expected_private_state_dir/mail-accounts.json" && \
+  "$MAC_SETUP_MAIL_PROFILE_DIR_DEFAULT" == "$expected_private_state_dir/mail-profiles" ]] || {
+  echo "default Mail private-state paths changed unexpectedly" >&2
+  exit 1
+}
+case "$MAC_SETUP_PRIVATE_STATE_DIR_DEFAULT/" in
+  "$REPO_ROOT"/*)
+    echo "default Mail private-state directory must remain outside the checkout" >&2
+    exit 1
+    ;;
+esac
+
+/usr/bin/grep -Fq 'rev-parse --is-inside-work-tree' "$SOURCE_SCRIPT" || {
+  echo "flake source no longer recognizes linked Git worktrees" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match the retired literal .git-directory test.
+if /usr/bin/grep -Fq '[[ -d "$REPO_ROOT/.git" ]]' "$SOURCE_SCRIPT"; then
+  echo "flake source incorrectly requires a .git directory" >&2
+  exit 1
+fi
+
+command -v jq >/dev/null 2>&1 || {
+  echo "required command not found: jq" >&2
+  exit 1
+}
+
+untracked_sentinel="$(/usr/bin/mktemp \
+  "$REPO_ROOT/.flake-source-untracked-sentinel.XXXXXX")"
+cleanup_untracked_sentinel() {
+  if [[ -n "${untracked_sentinel:-}" && -f "$untracked_sentinel" && \
+    ! -L "$untracked_sentinel" ]]; then
+    /bin/rm -f -- "$untracked_sentinel" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_untracked_sentinel EXIT
+printf '%s\n' 'private untracked sentinel' >"$untracked_sentinel"
+untracked_sentinel_name="$(/usr/bin/basename "$untracked_sentinel")"
+
+source_path="$($SOURCE_SCRIPT)"
+[[ "$source_path" =~ ^/nix/store/[0-9a-z]{32}-source$ ]] || {
+  echo "filtered flake source was not added at the expected immutable path" >&2
+  exit 1
+}
+[[ -f "$source_path/flake.nix" && -f "$source_path/scripts/flake-source" ]] || {
+  echo "filtered flake source omitted required public working-tree files" >&2
+  exit 1
+}
+[[ ! -e "$source_path/.git" && ! -e "$source_path/.local" ]] || {
+  echo "filtered flake source exposed repository metadata or private local state" >&2
+  exit 1
+}
+[[ ! -e "$source_path/$untracked_sentinel_name" ]] || {
+  echo "filtered flake source exposed an arbitrary untracked file" >&2
+  exit 1
+}
+cleanup_untracked_sentinel
+untracked_sentinel=""
+trap - EXIT
+
+generic_user="$("$NIX_BIN" eval --raw \
+  "$source_path#darwinConfigurations.mini.config.system.primaryUser")"
+[[ "$generic_user" == "macuser" ]] || {
+  echo "pure filtered-flake evaluation did not use the public generic fallback" >&2
+  exit 1
+}
+
+temp_base="${TMPDIR:-/tmp}"
+temp_base="${temp_base%/}"
+test_root="$(mktemp -d "$temp_base/mac-setup-flake-privacy-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "$temp_base"/mac-setup-flake-privacy-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+identity_home="$test_root/identity-home"
+/bin/mkdir -m 700 "$identity_home"
+/bin/mkdir -m 700 "$identity_home/.config"
+XDG_CONFIG_HOME="$REPO_ROOT" HOME="$identity_home" \
+  "$REPO_ROOT/scripts/configure-git-identity" --check-paths
+if HOME="$REPO_ROOT" XDG_CONFIG_HOME="$identity_home/.config" \
+  "$REPO_ROOT/scripts/configure-git-identity" --check-paths \
+  >/dev/null 2>&1; then
+  echo "Git identity path guard trusted XDG_CONFIG_HOME over the fixed private boundary" >&2
+  exit 1
+fi
+if /usr/bin/grep -q 'XDG_CONFIG_HOME:-' \
+  "$REPO_ROOT/scripts/configure-git-identity"; then
+  echo "Git identity helper still honors ambient XDG_CONFIG_HOME" >&2
+  exit 1
+fi
+
+linked_repository="$test_root/linked-repository"
+linked_checkout="$test_root/linked-checkout"
+linked_copy="$test_root/linked-copy"
+linked_rejected_copy="$test_root/linked-rejected-copy"
+linked_divergent_copy="$test_root/linked-divergent-copy"
+linked_unsafe_copy="$test_root/linked-unsafe-copy"
+/usr/bin/git init -q "$linked_repository"
+/bin/mkdir -p \
+  "$linked_repository/scripts" \
+  "$linked_repository/.LOCAL/mail-profiles" \
+  "$linked_repository/public-directory"
+/bin/cp "$REPO_ROOT/flake.nix" "$REPO_ROOT/flake.lock" "$linked_repository/"
+/bin/cp \
+  "$REPO_ROOT/scripts/check-index-worktree-parity" \
+  "$REPO_ROOT/scripts/check-public-safety" \
+  "$REPO_ROOT/scripts/flake-source" \
+  "$REPO_ROOT/scripts/run-with-validation-tools" \
+  "$REPO_ROOT/scripts/trusted-git" \
+  "$REPO_ROOT/scripts/trusted-nix" \
+  "$REPO_ROOT/scripts/trusted-path" \
+  "$linked_repository/scripts/"
+printf '%s\n' 'private fixture' \
+  >"$linked_repository/.LOCAL/mail-profiles/private.mobileconfig"
+printf '%s\n' 'public fixture' \
+  >"$linked_repository/public-directory/tracked.txt"
+/usr/bin/git -C "$linked_repository" add \
+  flake.nix flake.lock public-directory/tracked.txt \
+  scripts
+/usr/bin/git -C "$linked_repository" add -f \
+  .LOCAL/mail-profiles/private.mobileconfig
+/usr/bin/git -C "$linked_repository" \
+  -c core.hooksPath=/dev/null \
+  -c user.name=Fixture \
+  -c user.email=fixture.invalid \
+  -c commit.gpgsign=false \
+  commit -q -m fixture
+/usr/bin/git -C "$linked_repository" worktree add -q --detach \
+  "$linked_checkout" HEAD
+/bin/mkdir -m 700 "$linked_rejected_copy"
+if "$linked_checkout/scripts/flake-source" --copy-to "$linked_rejected_copy" \
+  >/dev/null 2>&1; then
+  echo "filtered flake source accepted a tracked .local path" >&2
+  exit 1
+fi
+/usr/bin/git -C "$linked_checkout" rm --cached -q \
+  .LOCAL/mail-profiles/private.mobileconfig
+/bin/mkdir -m 700 "$linked_copy"
+"$linked_checkout/scripts/flake-source" --copy-to "$linked_copy" >/dev/null
+[[ -f "$linked_checkout/.git" && -f "$linked_copy/flake.nix" && \
+  -f "$linked_copy/scripts/flake-source" && ! -e "$linked_copy/.local" && \
+  ! -e "$linked_copy/.LOCAL" ]] || {
+  echo "filtered flake source failed from a linked Git worktree" >&2
+  exit 1
+}
+
+sensitive_index_value="$(printf '%s%s%s' account @ private.example)"
+printf '%s\n' "$sensitive_index_value" \
+  >"$linked_checkout/public-directory/tracked.txt"
+/usr/bin/git -C "$linked_checkout" add public-directory/tracked.txt
+printf '%s\n' 'safe working-tree replacement' \
+  >"$linked_checkout/public-directory/tracked.txt"
+/bin/mkdir -m 700 "$linked_divergent_copy"
+if "$linked_checkout/scripts/flake-source" --copy-to "$linked_divergent_copy" \
+  >/dev/null 2>&1; then
+  echo "filtered flake source accepted staged bytes hidden by a working-tree replacement" >&2
+  exit 1
+fi
+printf '%s\n' 'public fixture' \
+  >"$linked_checkout/public-directory/tracked.txt"
+/usr/bin/git -C "$linked_checkout" add public-directory/tracked.txt
+
+outside_tracked_directory="$test_root/outside-tracked-directory"
+/bin/mkdir -m 700 "$outside_tracked_directory"
+printf '%s\n' 'outside private sentinel' \
+  >"$outside_tracked_directory/tracked.txt"
+/usr/bin/git -C "$linked_checkout" update-index --assume-unchanged \
+  public-directory/tracked.txt
+/bin/rm -f -- "$linked_checkout/public-directory/tracked.txt"
+/bin/rmdir "$linked_checkout/public-directory"
+/bin/ln -s "$outside_tracked_directory" "$linked_checkout/public-directory"
+/bin/mkdir -m 700 "$linked_unsafe_copy"
+if "$linked_checkout/scripts/flake-source" --copy-to "$linked_unsafe_copy" \
+  >/dev/null 2>&1; then
+  echo "filtered flake source accepted a tracked file through a symlinked ancestor" >&2
+  exit 1
+fi
+[[ ! -e "$linked_unsafe_copy/public-directory/tracked.txt" ]] || {
+  echo "filtered flake source copied an outside file through a tracked path" >&2
+  exit 1
+}
+
+inside_via_dotdot="$REPO_ROOT/../$(/usr/bin/basename "$REPO_ROOT")/.local/mail-accounts.json"
+if mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$inside_via_dotdot" "test Mail config" >/dev/null 2>&1; then
+  echo "private-state path guard accepted checkout traversal through .." >&2
+  exit 1
+fi
+
+checkout_link="$test_root/checkout-link"
+/bin/ln -s "$REPO_ROOT" "$checkout_link"
+if mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$checkout_link/private/mail-accounts.json" \
+  "test Mail config" >/dev/null 2>&1; then
+  echo "private-state path guard accepted a symlinked checkout ancestor" >&2
+  exit 1
+fi
+
+case_alias_root="$(/usr/bin/dirname "$REPO_ROOT")/$(
+  printf '%s' "$(/usr/bin/basename "$REPO_ROOT")" | /usr/bin/tr '[:lower:]' '[:upper:]'
+)"
+if [[ "$case_alias_root" != "$REPO_ROOT" && -d "$case_alias_root" && \
+  "$case_alias_root" -ef "$REPO_ROOT" ]] && \
+  mac_setup_canonical_private_path \
+    "$REPO_ROOT" "$case_alias_root/.local/mail-accounts.json" \
+    "test Mail config" >/dev/null 2>&1; then
+  echo "private-state path guard accepted a case-insensitive checkout alias" >&2
+  exit 1
+fi
+
+safe_target="$test_root/safe-target"
+final_symlink="$test_root/final-symlink"
+/bin/mkdir -m 700 "$safe_target"
+/bin/ln -s "$safe_target" "$final_symlink"
+if mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$final_symlink/" "test profile directory" >/dev/null 2>&1; then
+  echo "private-state path guard accepted a final symlink with a trailing slash" >&2
+  exit 1
+fi
+
+control_target="$test_root/control"$'\n'"target"
+control_link="$test_root/control-link"
+/bin/mkdir -m 700 "$control_target"
+/bin/ln -s "$control_target" "$control_link"
+if mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$control_link/mail.json" \
+  "test Mail config" >/dev/null 2>&1; then
+  echo "private-state path guard accepted a control character from a symlink target" >&2
+  exit 1
+fi
+
+if mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$test_root/unsafe"$'\n'"mail.json" \
+  "test Mail config" >/dev/null 2>&1; then
+  echo "private-state path guard accepted a control character" >&2
+  exit 1
+fi
+
+fixture_config="$test_root/config.json"
+jq -n \
+  --arg username "fixtureuser" \
+  --arg home_directory "/Users/macuser" \
+  --arg host_name "mini" \
+  '{
+    username: $username,
+    homeDirectory: $home_directory,
+    hostName: $host_name
+  }' >"$fixture_config"
+/bin/chmod 600 "$fixture_config"
+
+fixture_user="$(
+  MAC_SETUP_LOCAL_CONFIG="$fixture_config" \
+    "$NIX_BIN" eval --impure --raw \
+      "$source_path#darwinConfigurations.mini.config.system.primaryUser"
+)"
+[[ "$fixture_user" == "fixtureuser" ]] || {
+  echo "impure local evaluation did not read the explicitly selected host config" >&2
+  exit 1
+}
+[[ ! -e "$source_path/.local" && ! -e "$source_path/config.json" ]] || {
+  echo "external host config was copied into the filtered flake source" >&2
+  exit 1
+}
+
+echo "filtered flake source privacy tests passed"

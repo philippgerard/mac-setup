@@ -1,28 +1,123 @@
-#!/bin/bash
+#!/bin/bash -p
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FLAKE_REF="path:$REPO_ROOT"
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+LOCAL_CONFIG="$REPO_ROOT/.local/config.json"
+BREW_BIN="/opt/homebrew/bin/brew"
 
-for command_name in nix brew; do
-  command -v "$command_name" >/dev/null 2>&1 || {
-    echo "required command not found: $command_name" >&2
+usage() {
+  cat <<'EOF'
+Usage: scripts/homebrew-dry-run
+
+Check the declared Homebrew bundle and show undeclared installed software.
+Nothing is installed or removed.
+EOF
+}
+
+case "${1:-}" in
+  "")
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "unknown argument: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+[[ $# -eq 0 ]] || {
+  echo "too many arguments" >&2
+  usage >&2
+  exit 2
+}
+
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+
+for brew_directory in /opt/homebrew /opt/homebrew/bin; do
+  [[ -d "$brew_directory" && ! -L "$brew_directory" && \
+    -O "$brew_directory" ]] || {
+    echo "Homebrew path is missing, unsafe, or not owned by the current user: $brew_directory" >&2
     exit 1
   }
 done
+[[ -f "$BREW_BIN" && ! -L "$BREW_BIN" && -x "$BREW_BIN" && \
+  -O "$BREW_BIN" ]] || {
+  echo "trusted Homebrew executable is missing, unsafe, or not owned by the current user: $BREW_BIN" >&2
+  exit 1
+}
 
-brewfile="$(mktemp "${TMPDIR:-/tmp}/mac-setup-brewfile.XXXXXX")"
-trap 'rm -f "$brewfile"' EXIT
+JQ_BIN="$(command -v jq || true)"
+[[ "$JQ_BIN" == /* && -x "$JQ_BIN" ]] || {
+  echo "required command not found in the trusted command path: jq" >&2
+  exit 1
+}
 
-nix eval --raw "$FLAKE_REF#darwinConfigurations.mini.config.homebrew.brewfile" >"$brewfile"
+[[ -f "$LOCAL_CONFIG" && ! -L "$LOCAL_CONFIG" && -O "$LOCAL_CONFIG" ]] || {
+  echo "missing or unsafe private local host metadata; run setup.sh first" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$LOCAL_CONFIG")" == "600" ]] || {
+  echo "private local host metadata must have mode 0600" >&2
+  exit 1
+}
+FLAKE_REF="$("$REPO_ROOT/scripts/flake-source")"
+
+temp_root="${TMPDIR:-/tmp}"
+temp_root="${temp_root%/}"
+work_dir="$(/usr/bin/mktemp -d "$temp_root/mac-setup-homebrew-dry-run.XXXXXX")"
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+cleanup() {
+  if [[ -n "${work_dir:-}" && -d "$work_dir" && ! -L "$work_dir" && \
+    "$work_dir" == "$temp_root"/mac-setup-homebrew-dry-run.* ]]; then
+    /bin/rm -rf -- "$work_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+brewfile="$work_dir/Brewfile"
+trust_config_dir="$work_dir/config"
+/bin/mkdir -m 700 "$trust_config_dir"
+
+MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG" \
+  "$NIX_BIN" eval --impure --raw \
+    "$FLAKE_REF#darwinConfigurations.mini.config.homebrew.brewfile" >"$brewfile"
+trusted_taps_json="$(
+  MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG" \
+    "$NIX_BIN" eval --impure --json \
+      "$FLAKE_REF#darwinConfigurations.mini.config.homebrew.taps"
+)"
+"$JQ_BIN" -e '
+  type == "array" and
+  all(.[]; type == "object" and (.name | type == "string" and length > 0))
+' >/dev/null <<<"$trusted_taps_json"
+
+# `brew bundle check` does not import the Brewfile's `trusted: true` declarations
+# before evaluating third-party taps. Recreate only those declared tap approvals
+# in an isolated trust store so this remains a read-only check of live Homebrew.
+while IFS= read -r trusted_tap; do
+  [[ -n "$trusted_tap" ]] || continue
+  XDG_CONFIG_HOME="$trust_config_dir" \
+    "$BREW_BIN" trust --tap "$trusted_tap" >/dev/null
+done < <("$JQ_BIN" -r \
+  '.[] | select(.trusted == true) | .name' <<<"$trusted_taps_json")
 
 echo "Checking declared dependencies..."
 check_status=0
-HOMEBREW_NO_AUTO_UPDATE=1 brew bundle check --verbose --file="$brewfile" || check_status=$?
+HOMEBREW_NO_AUTO_UPDATE=1 XDG_CONFIG_HOME="$trust_config_dir" \
+  "$BREW_BIN" bundle check --verbose --file="$brewfile" || check_status=$?
 
 echo
 echo "Showing undeclared installed software. Nothing will be removed."
-HOMEBREW_NO_AUTO_UPDATE=1 brew bundle cleanup --file="$brewfile"
+HOMEBREW_NO_AUTO_UPDATE=1 XDG_CONFIG_HOME="$trust_config_dir" \
+  "$BREW_BIN" bundle cleanup --file="$brewfile"
 
 exit "$check_status"

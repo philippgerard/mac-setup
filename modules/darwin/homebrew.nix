@@ -16,10 +16,6 @@
 
     taps = [
       {
-        name = "getsentry/xcodebuildmcp";
-        trusted = true;
-      }
-      {
         name = "shebe-oss/tap";
         trusted = true;
       }
@@ -28,7 +24,6 @@
     brews = [
       "mas"
       "mole"
-      "getsentry/xcodebuildmcp/xcodebuildmcp"
       "shebe-oss/tap/shebe"
     ];
   };

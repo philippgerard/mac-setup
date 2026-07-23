@@ -1,0 +1,185 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-public-safety-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-public-safety-test.* ]]; then
+    /bin/chmod -R u+rwX "$test_root" >/dev/null 2>&1 || true
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fixture_repo="$test_root/repository"
+/usr/bin/git init -q "$fixture_repo"
+/bin/mkdir "$fixture_repo/scripts"
+/bin/cp \
+  "$REPO_ROOT/scripts/check-public-safety" \
+  "$REPO_ROOT/scripts/trusted-git" \
+  "$REPO_ROOT/scripts/trusted-path" \
+  "$fixture_repo/scripts/"
+/bin/chmod 755 "$fixture_repo/scripts/check-public-safety"
+printf '%s\n' 'safe public fixture' >"$fixture_repo/README.md"
+safe_email="$(printf '%s%s%s' 123+public @ users.noreply.github.com)"
+/usr/bin/git -C "$fixture_repo" config user.name Fixture
+/usr/bin/git -C "$fixture_repo" config user.email "$safe_email"
+/usr/bin/git -C "$fixture_repo" config commit.gpgSign false
+/usr/bin/git -C "$fixture_repo" add README.md scripts
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  commit -q -m fixture
+"$fixture_repo/scripts/check-public-safety" >/dev/null
+
+/bin/mkdir "$fixture_repo/.local"
+printf '%s\n' 'private fixture' >"$fixture_repo/.local/private.txt"
+/usr/bin/git -C "$fixture_repo" add -f .local/private.txt
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan accepted a tracked .local path" >&2
+  exit 1
+fi
+/usr/bin/git -C "$fixture_repo" rm --cached -q .local/private.txt
+/bin/rm -f -- "$fixture_repo/.local/private.txt"
+/bin/rmdir "$fixture_repo/.local"
+
+/bin/mkdir "$fixture_repo/.LOCAL"
+printf '%s\n' 'private case-alias fixture' >"$fixture_repo/.LOCAL/private.txt"
+/usr/bin/git -C "$fixture_repo" add -f .LOCAL/private.txt
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan accepted a case-insensitive .local alias" >&2
+  exit 1
+fi
+/usr/bin/git -C "$fixture_repo" rm --cached -q .LOCAL/private.txt
+/bin/rm -f -- "$fixture_repo/.LOCAL/private.txt"
+/bin/rmdir "$fixture_repo/.LOCAL"
+
+sensitive_email="$(printf '%s%s%s' account @ private.example)"
+printf '%s\n' "$sensitive_email" >"$fixture_repo/README.md"
+/usr/bin/git -C "$fixture_repo" add README.md
+printf '%s\n' 'safe replacement in working tree only' >"$fixture_repo/README.md"
+alternate_index="$test_root/alternate-index"
+GIT_INDEX_FILE="$alternate_index" \
+  /usr/bin/git -C "$fixture_repo" read-tree --empty
+bash_env_file="$test_root/bash-env"
+bash_env_marker="$test_root/bash-env-used"
+# shellcheck disable=SC2016 # Write a literal child-shell variable reference.
+printf 'printf used >"$PUBLIC_SAFETY_BASH_ENV_MARKER"\n' >"$bash_env_file"
+if GIT_INDEX_FILE="$alternate_index" \
+  BASH_ENV="$bash_env_file" \
+  PUBLIC_SAFETY_BASH_ENV_MARKER="$bash_env_marker" \
+  "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan accepted index bytes hidden by Git environment redirection" >&2
+  exit 1
+fi
+[[ ! -e "$bash_env_marker" ]] || {
+  echo "public-safety scan executed BASH_ENV before hardening" >&2
+  exit 1
+}
+
+printf '%s\n' 'safe staged replacement' >"$fixture_repo/README.md"
+/usr/bin/git -C "$fixture_repo" add README.md
+"$fixture_repo/scripts/check-public-safety" >/dev/null
+
+printf '%s\n' 'ignored-sensitive-fixture' >"$fixture_repo/.gitignore"
+printf '%s\n' "$sensitive_email" >"$fixture_repo/ignored-sensitive-fixture"
+/usr/bin/git -C "$fixture_repo" add .gitignore
+/usr/bin/git -C "$fixture_repo" add -f ignored-sensitive-fixture
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan allowed ignore rules to hide an indexed file" >&2
+  exit 1
+fi
+/usr/bin/git -C "$fixture_repo" rm --cached -q ignored-sensitive-fixture
+/bin/rm -f -- "$fixture_repo/ignored-sensitive-fixture"
+
+printf 'binary\0%s\0fixture\n' "$sensitive_email" \
+  >"$fixture_repo/binary-private-state"
+/usr/bin/git -C "$fixture_repo" add binary-private-state
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan accepted sensitive bytes after NUL" >&2
+  exit 1
+fi
+/usr/bin/git -C "$fixture_repo" rm --cached -q binary-private-state
+/bin/rm -f -- "$fixture_repo/binary-private-state"
+
+private_path_name="$sensitive_email"
+: >"$fixture_repo/$private_path_name"
+/usr/bin/git -C "$fixture_repo" add -- "$private_path_name"
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan accepted sensitive content in an indexed path name" >&2
+  exit 1
+fi
+/usr/bin/git -C "$fixture_repo" rm --cached -q -- "$private_path_name"
+/bin/rm -f -- "$fixture_repo/$private_path_name"
+
+/bin/ln -s safe-public-target "$fixture_repo/public-link"
+/usr/bin/git -C "$fixture_repo" add public-link
+/bin/rm -f -- "$fixture_repo/public-link"
+/bin/ln -s "$sensitive_email" "$fixture_repo/public-link"
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan accepted a sensitive live symlink target" >&2
+  exit 1
+fi
+/bin/rm -f -- "$fixture_repo/public-link"
+/bin/ln -s safe-public-target "$fixture_repo/public-link"
+
+printf '%s\n' 'unreadable safe fixture' >"$fixture_repo/unreadable-fixture"
+/usr/bin/git -C "$fixture_repo" add unreadable-fixture
+/bin/chmod 000 "$fixture_repo/unreadable-fixture"
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan treated a scanner error as no match" >&2
+  exit 1
+fi
+/bin/chmod 0644 "$fixture_repo/unreadable-fixture"
+/usr/bin/git -C "$fixture_repo" rm --cached -q unreadable-fixture
+/bin/rm -f -- "$fixture_repo/unreadable-fixture"
+
+identity_home="$test_root/identity-home"
+private_identity_file="$identity_home/.config/git/identity.inc"
+private_identity_name='Fixture Private Identity'
+/bin/mkdir -p "$identity_home/.config/git"
+/bin/chmod 0700 "$identity_home" "$identity_home/.config" \
+  "$identity_home/.config/git"
+/usr/bin/git config --file "$private_identity_file" user.name \
+  "$private_identity_name"
+/bin/chmod 0600 "$private_identity_file"
+printf '%s\n' "$private_identity_name" >"$fixture_repo/README.md"
+/usr/bin/git -C "$fixture_repo" add README.md
+if HOME="$identity_home" \
+  "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan did not read the fixed private identity include" >&2
+  exit 1
+fi
+printf '%s\n' 'safe final fixture' >"$fixture_repo/README.md"
+/usr/bin/git -C "$fixture_repo" add README.md
+
+printf '%s\n' 'intent-to-add fixture' >"$fixture_repo/new-public-file"
+/usr/bin/git -C "$fixture_repo" add -N new-public-file
+"$fixture_repo/scripts/check-public-safety" >/dev/null
+/usr/bin/git -C "$fixture_repo" rm --cached -q new-public-file
+/bin/rm -f -- "$fixture_repo/new-public-file"
+
+/usr/bin/git -C "$fixture_repo" add -A
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  commit -q -m safe-state
+base_branch="$(/usr/bin/git -C "$fixture_repo" branch --show-current)"
+/usr/bin/git -C "$fixture_repo" checkout -q -b conflict-side
+printf '%s\n' 'side version' >"$fixture_repo/README.md"
+/usr/bin/git -C "$fixture_repo" add README.md
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  commit -q -m side
+/usr/bin/git -C "$fixture_repo" checkout -q "$base_branch"
+printf '%s\n' 'base version' >"$fixture_repo/README.md"
+/usr/bin/git -C "$fixture_repo" add README.md
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  commit -q -m base
+/usr/bin/git -C "$fixture_repo" -c core.hooksPath=/dev/null \
+  merge conflict-side >/dev/null 2>&1 || true
+[[ -n "$(/usr/bin/git -C "$fixture_repo" ls-files --unmerged)" ]]
+if "$fixture_repo/scripts/check-public-safety" >/dev/null 2>&1; then
+  echo "public-safety scan accepted an unmerged index" >&2
+  exit 1
+fi
+
+echo "public-safety source and index boundary tests passed"

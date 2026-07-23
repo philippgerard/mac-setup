@@ -1,0 +1,35 @@
+#!/bin/bash
+
+mac_setup_trusted_nix() {
+  local launcher="/nix/var/nix/profiles/default/bin/nix"
+  local mode
+  local owner
+  local target
+
+  [[ -L "$launcher" ]] || {
+    echo "trusted Determinate Nix launcher is missing" >&2
+    return 1
+  }
+  target="$(/usr/bin/readlink "$launcher")" || {
+    echo "trusted Determinate Nix launcher could not be resolved" >&2
+    return 1
+  }
+  [[ "$target" =~ ^/nix/store/[0-9a-z]{32}-[^/]+/bin/nix$ && \
+    -f "$target" && ! -L "$target" && -x "$target" ]] || {
+    echo "Determinate Nix launcher has an unexpected target" >&2
+    return 1
+  }
+
+  owner="$(/usr/bin/stat -f '%Su' "$target")"
+  mode="$(/usr/bin/stat -f '%Lp' "$target")"
+  [[ "$owner" == "root" && "$mode" =~ ^[0-7]{3,4}$ ]] || {
+    echo "Determinate Nix has unsafe ownership or permissions" >&2
+    return 1
+  }
+  (( (8#$mode & 8#22) == 0 )) || {
+    echo "Determinate Nix is writable outside its owner" >&2
+    return 1
+  }
+
+  printf '%s\n' "$target"
+}

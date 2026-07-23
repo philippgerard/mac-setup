@@ -1,0 +1,184 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+COPY_TO=""
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-git
+source "$REPO_ROOT/scripts/trusted-git"
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/flake-source [--copy-to <empty-directory>]
+
+Create a flake source containing only Git-indexed public working-tree files
+while always excluding .local private state. Mark a new public file with
+`git add -N` or stage it before validation. By default, add the source to the
+Nix store and print its immutable path. --copy-to is used by maintenance
+commands that need a writable, filtered source tree.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --copy-to)
+      [[ $# -ge 2 ]] || { echo "missing value for --copy-to" >&2; exit 2; }
+      COPY_TO="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -x /usr/bin/git && -x /usr/bin/find && -x /usr/bin/grep && \
+  -x /usr/bin/mktemp ]] || {
+  echo "required macOS source-filter command is unavailable" >&2
+  exit 1
+}
+
+[[ "$(mac_setup_safe_git "$REPO_ROOT" \
+  rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] || {
+  echo "flake source must be created from a Git checkout" >&2
+  exit 1
+}
+
+"$REPO_ROOT/scripts/check-index-worktree-parity" >/dev/null
+"$REPO_ROOT/scripts/check-public-safety" >/dev/null
+
+tracked_private_path=0
+while IFS= read -r -d '' tracked_path; do
+  case "$tracked_path" in
+    .[lL][oO][cC][aA][lL]|.[lL][oO][cC][aA][lL]/*)
+      tracked_private_path=1
+      ;;
+  esac
+done < <(mac_setup_safe_git "$REPO_ROOT" ls-files --cached -z)
+[[ "$tracked_private_path" -eq 0 ]] || {
+  echo "refusing a tracked case-insensitive .local path" >&2
+  exit 1
+}
+
+copy_public_worktree() {
+  local destination_root="$1"
+  local destination
+  local ancestor_path
+  local relative_path
+  local source_path
+  local symlink_target
+  local destination_mode
+
+  [[ -d "$destination_root" && ! -L "$destination_root" && -O "$destination_root" ]] || {
+    echo "flake source destination must be a user-owned directory, not a symlink" >&2
+    exit 1
+  }
+  destination_mode="$(/usr/bin/stat -f '%Lp' "$destination_root")"
+  [[ "$destination_mode" =~ ^[0-7]{3,4}$ && \
+    $((8#$destination_mode & 8#77)) -eq 0 ]] || {
+    echo "flake source destination must not be accessible by group or other users" >&2
+    exit 1
+  }
+  if /usr/bin/find "$destination_root" -mindepth 1 -maxdepth 1 -print -quit | \
+    /usr/bin/grep -q .; then
+    echo "flake source destination must be empty" >&2
+    exit 1
+  fi
+
+  while IFS= read -r -d '' relative_path; do
+    case "$relative_path" in
+      .[lL][oO][cC][aA][lL]|.[lL][oO][cC][aA][lL]/*)
+        continue
+        ;;
+      /*|..|../*|*/../*)
+        echo "Git returned an unsafe working-tree path" >&2
+        exit 1
+        ;;
+    esac
+
+    source_path="$REPO_ROOT/$relative_path"
+    [[ -e "$source_path" || -L "$source_path" ]] || continue
+
+    # Git tracks path names, not the live type of every ancestor. Refuse a
+    # working tree where a tracked directory was replaced by a symlink, or an
+    # outside file could be followed into the public Nix source.
+    ancestor_path="$(/usr/bin/dirname "$source_path")"
+    while [[ "$ancestor_path" != "$REPO_ROOT" ]]; do
+      [[ "$ancestor_path" == "$REPO_ROOT"/* && ! -L "$ancestor_path" ]] || {
+        echo "refusing to archive a tracked path through a symlinked ancestor" >&2
+        exit 1
+      }
+      ancestor_path="$(/usr/bin/dirname "$ancestor_path")"
+    done
+
+    destination="$destination_root/$relative_path"
+    /bin/mkdir -p "$(/usr/bin/dirname "$destination")"
+
+    if [[ -L "$source_path" ]]; then
+      symlink_target="$(/usr/bin/readlink "$source_path")"
+      case "$symlink_target" in
+        /*|..|../*|*/../*)
+          echo "refusing to archive a public symlink that escapes the checkout" >&2
+          exit 1
+          ;;
+      esac
+      /bin/ln -s "$symlink_target" "$destination"
+    elif [[ -f "$source_path" ]]; then
+      /bin/cp -p "$source_path" "$destination"
+    else
+      echo "unsupported non-file path in the public working tree: $relative_path" >&2
+      exit 1
+    fi
+  done < <(mac_setup_safe_git "$REPO_ROOT" ls-files --cached -z)
+
+  [[ -f "$destination_root/flake.nix" && -f "$destination_root/flake.lock" ]] || {
+    echo "filtered flake source is incomplete" >&2
+    exit 1
+  }
+}
+
+if [[ -n "$COPY_TO" ]]; then
+  copy_public_worktree "$COPY_TO"
+  "$REPO_ROOT/scripts/run-with-validation-tools" \
+    gitleaks dir --no-banner --redact "$COPY_TO" >/dev/null
+  printf '%s\n' "$COPY_TO"
+  exit 0
+fi
+
+NIX_BIN="$(mac_setup_trusted_nix)"
+
+temp_base="${TMPDIR:-/tmp}"
+temp_base="${temp_base%/}"
+temporary_root="$(/usr/bin/mktemp -d "$temp_base/mac-setup-flake-source.XXXXXX")"
+source_directory="$temporary_root/source"
+/bin/mkdir -m 700 "$source_directory"
+cleanup() {
+  if [[ -n "${temporary_root:-}" && -d "$temporary_root" && ! -L "$temporary_root" && \
+    "$temporary_root" == "$temp_base"/mac-setup-flake-source.* ]]; then
+    /bin/rm -rf -- "$temporary_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+copy_public_worktree "$source_directory"
+"$REPO_ROOT/scripts/run-with-validation-tools" \
+  gitleaks dir --no-banner --redact "$source_directory" >/dev/null
+store_path="$("$NIX_BIN" store add-path "$source_directory")"
+[[ "$store_path" =~ ^/nix/store/[0-9a-z]{32}-source$ ]] || {
+  echo "Nix returned an unexpected filtered source path" >&2
+  exit 1
+}
+
+printf '%s\n' "$store_path"

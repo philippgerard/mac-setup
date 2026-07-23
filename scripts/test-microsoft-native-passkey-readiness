@@ -1,0 +1,160 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+READINESS_SCRIPT="$REPO_ROOT/scripts/microsoft-native-passkey-readiness"
+TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-microsoft-auth-test.XXXXXX")"
+FIXTURE_DIR="$TEST_DIR/fixture"
+PROFILES_JSON="$TEST_DIR/profiles.json"
+SENSITIVE_SENTINEL="private-account-value"
+
+cleanup() {
+  /bin/rm -rf -- "$TEST_DIR" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+mkdir -p "$FIXTURE_DIR"
+chmod 700 "$TEST_DIR" "$FIXTURE_DIR"
+
+write_ready_fixture() {
+  printf '%s\n' '14.0' >"$FIXTURE_DIR/system-version"
+  printf '%s\n' 'yes' >"$FIXTURE_DIR/company-portal-present"
+  printf '%s\n' \
+    "+ com.microsoft.CompanyPortalMac.ssoextension (1.0) $SENSITIVE_SENTINEL" \
+    >"$FIXTURE_DIR/plugins.txt"
+  printf '%s\n' 'MDM enrollment: Yes (User Approved)' \
+    >"$FIXTURE_DIR/enrollment.txt"
+  jq -n --arg sentinel "$SENSITIVE_SENTINEL" '
+    {
+      profiles: [
+        {
+          note: $sentinel,
+          ProfileItems: [
+            {
+              PayloadType: "com.apple.extensiblesso",
+              ExtensionIdentifier: "com.microsoft.CompanyPortalMac.ssoextension",
+              TeamIdentifier: "UBF8T346G9"
+            }
+          ]
+        }
+      ]
+    }
+  ' >"$PROFILES_JSON"
+  plutil -convert xml1 -o "$FIXTURE_DIR/profiles.plist" "$PROFILES_JSON"
+  chmod 600 "$FIXTURE_DIR"/*
+}
+
+expect_not_ready() {
+  local expected_message="$1"
+  local output
+
+  if output="$("$READINESS_SCRIPT" --fixture-dir "$FIXTURE_DIR" 2>&1)"; then
+    echo "an incomplete Microsoft native passkey fixture was accepted" >&2
+    exit 1
+  fi
+  grep -Fq "$expected_message" <<<"$output"
+  grep -Fq "This is an advisory broker check" <<<"$output"
+  grep -Fq "installing Company Portal alone" <<<"$output"
+  grep -Fq "https://myaccount.microsoft.com/" <<<"$output"
+  grep -Fq "PIV/certificate" <<<"$output"
+  if grep -Fq "$SENSITIVE_SENTINEL" <<<"$output"; then
+    echo "Microsoft readiness output disclosed fixture account data" >&2
+    exit 1
+  fi
+}
+
+write_ready_fixture
+ready_output="$("$READINESS_SCRIPT" --fixture-dir "$FIXTURE_DIR")"
+grep -Fq "Microsoft native passkey broker signals: detected" <<<"$ready_output"
+grep -Fq "does not prove that Internet Accounts can use the key" <<<"$ready_output"
+if [[ "$(grep -Fc "Microsoft native passkey broker signals: detected" <<<"$ready_output")" -ne 1 ]]; then
+  echo "complete Microsoft native passkey fixture was not accepted" >&2
+  exit 1
+fi
+if grep -Fq "$SENSITIVE_SENTINEL" <<<"$ready_output"; then
+  echo "successful Microsoft readiness output disclosed fixture account data" >&2
+  exit 1
+fi
+
+write_ready_fixture
+printf '%s\n' '13.7.6' >"$FIXTURE_DIR/system-version"
+expect_not_ready "macOS 14 or newer"
+
+write_ready_fixture
+printf '%s\n' 'not-a-version' >"$FIXTURE_DIR/system-version"
+expect_not_ready "a verifiable macOS 14-or-newer system version"
+
+write_ready_fixture
+printf '%s\n' 'no' >"$FIXTURE_DIR/company-portal-present"
+expect_not_ready "Microsoft Company Portal"
+
+write_ready_fixture
+printf '%s\n' \
+  '+ com.microsoft.CompanyPortalMac.ssoextension.untrusted (1.0)' \
+  >"$FIXTURE_DIR/plugins.txt"
+expect_not_ready "an enabled Microsoft Company Portal SSO extension"
+
+write_ready_fixture
+printf '%s\n' \
+  '- com.microsoft.CompanyPortalMac.ssoextension (1.0)' \
+  >"$FIXTURE_DIR/plugins.txt"
+expect_not_ready "an enabled Microsoft Company Portal SSO extension"
+
+write_ready_fixture
+printf '%s\n' 'MDM enrollment: No' >"$FIXTURE_DIR/enrollment.txt"
+expect_not_ready "an active MDM enrollment"
+
+write_ready_fixture
+jq -n '{profiles: [{ProfileItems: [{PayloadType: "com.example.other"}]}]}' \
+  >"$PROFILES_JSON"
+plutil -convert xml1 -o "$FIXTURE_DIR/profiles.plist" "$PROFILES_JSON"
+expect_not_ready "a detected Microsoft Extensible SSO configuration payload"
+
+write_ready_fixture
+jq -n '{
+  profiles: [
+    {
+      ProfileItems: [
+        {
+          PayloadType: "com.apple.extensiblesso",
+          ExtensionIdentifier: "com.example.unrelated.sso"
+        }
+      ]
+    }
+  ]
+}' >"$PROFILES_JSON"
+plutil -convert xml1 -o "$FIXTURE_DIR/profiles.plist" "$PROFILES_JSON"
+expect_not_ready "a detected Microsoft Extensible SSO configuration payload"
+
+write_ready_fixture
+jq -n '{
+  profiles: [
+    {
+      ProfileItems: [
+        {
+          PayloadType: "com.apple.extensiblesso",
+          ExtensionIdentifier: "com.microsoft.CompanyPortalMac.ssoextension",
+          TeamIdentifier: "EXAMPLETEAM"
+        }
+      ]
+    }
+  ]
+}' >"$PROFILES_JSON"
+plutil -convert xml1 -o "$FIXTURE_DIR/profiles.plist" "$PROFILES_JSON"
+expect_not_ready "a detected Microsoft Extensible SSO configuration payload"
+
+write_ready_fixture
+/bin/rm "$FIXTURE_DIR/plugins.txt"
+if "$READINESS_SCRIPT" --fixture-dir "$FIXTURE_DIR" >/dev/null 2>&1; then
+  echo "an incomplete fixture directory was accepted" >&2
+  exit 1
+fi
+
+if "$READINESS_SCRIPT" --unknown >/dev/null 2>&1; then
+  echo "an unknown Microsoft readiness argument was accepted" >&2
+  exit 1
+fi
+
+echo "Microsoft native passkey readiness tests passed"

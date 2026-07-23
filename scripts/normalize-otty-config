@@ -1,0 +1,60 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: normalize-otty-config <config.toml> <shell-path>" >&2
+  exit 2
+fi
+
+CONFIG_FILE="$1"
+SHELL_PATH="$2"
+CONFIG_DIR="$(/usr/bin/dirname "$CONFIG_FILE")"
+
+[[ "$SHELL_PATH" =~ ^/[A-Za-z0-9._/+:-]+$ ]] || {
+  echo "unsafe shell path" >&2
+  exit 2
+}
+[[ -d "$CONFIG_DIR" && ! -L "$CONFIG_DIR" && -O "$CONFIG_DIR" ]] || {
+  echo "Otty config directory must be user-owned and must not be a symlink" >&2
+  exit 1
+}
+[[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] || {
+  echo "Otty config must be a user-owned regular file and must not be a symlink" >&2
+  exit 1
+}
+
+temporary_file="$(/usr/bin/mktemp "$CONFIG_DIR/.config.toml.XXXXXX")"
+cleanup() {
+  if [[ -n "${temporary_file:-}" && -f "$temporary_file" && ! -L "$temporary_file" ]]; then
+    /bin/rm -f -- "$temporary_file" || true
+  fi
+  return 0
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if ! /usr/bin/awk -v shell_path="$SHELL_PATH" '
+  /^[[:space:]]*env[[:space:]]*=[[:space:]]*["\047]SHELL=/ { next }
+  { print }
+  END { print "env = \"SHELL=" shell_path "\"" }
+' "$CONFIG_FILE" >"$temporary_file"; then
+  echo "could not normalize Otty config" >&2
+  exit 1
+fi
+/bin/chmod 0600 "$temporary_file"
+
+if /usr/bin/cmp -s "$CONFIG_FILE" "$temporary_file"; then
+  exit 0
+fi
+
+# Recheck the destination immediately before the atomic replacement.
+[[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] || {
+  echo "Otty config changed to an unsafe file during normalization" >&2
+  exit 1
+}
+/bin/mv -f -- "$temporary_file" "$CONFIG_FILE"
+temporary_file=""

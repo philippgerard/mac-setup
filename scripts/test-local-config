@@ -1,0 +1,80 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VALIDATOR="$REPO_ROOT/scripts/validate-local-config"
+expected_username="$(/usr/bin/id -un)"
+expected_home="$HOME"
+expected_host="mini"
+test_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-local-config-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_dir:-}" && -d "$test_dir" && ! -L "$test_dir" ]]; then
+    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+create_valid_config() {
+  local destination="$1"
+
+  /usr/bin/plutil -create xml1 "$destination"
+  /usr/bin/plutil -insert username -string "$expected_username" "$destination"
+  /usr/bin/plutil -insert homeDirectory -string "$expected_home" "$destination"
+  /usr/bin/plutil -insert hostName -string "$expected_host" "$destination"
+  /usr/bin/plutil -convert json "$destination"
+  /bin/chmod 600 "$destination"
+}
+
+expect_rejected() {
+  local description="$1"
+  local candidate="$2"
+
+  if "$VALIDATOR" "$candidate" "$expected_username" "$expected_home" \
+    "$expected_host" >/dev/null 2>&1; then
+    echo "local config validator accepted $description" >&2
+    exit 1
+  fi
+}
+
+valid_config="$test_dir/valid.json"
+create_valid_config "$valid_config"
+"$VALIDATOR" "$valid_config" "$expected_username" "$expected_home" \
+  "$expected_host" >/dev/null
+
+extra_config="$test_dir/extra.json"
+/bin/cp "$valid_config" "$extra_config"
+/usr/bin/plutil -insert unexpected -string value "$extra_config"
+expect_rejected "an extra field" "$extra_config"
+
+missing_config="$test_dir/missing.json"
+/bin/cp "$valid_config" "$missing_config"
+/usr/bin/plutil -remove hostName "$missing_config"
+expect_rejected "a missing field" "$missing_config"
+
+wrong_type_config="$test_dir/wrong-type.json"
+/bin/cp "$valid_config" "$wrong_type_config"
+/usr/bin/plutil -replace username -integer 1 "$wrong_type_config"
+expect_rejected "a non-string field" "$wrong_type_config"
+
+wrong_host_config="$test_dir/wrong-host.json"
+/bin/cp "$valid_config" "$wrong_host_config"
+/usr/bin/plutil -replace hostName -string other-host "$wrong_host_config"
+expect_rejected "a stale hostname" "$wrong_host_config"
+
+xml_config="$test_dir/xml-config.json"
+/bin/cp "$valid_config" "$xml_config"
+/usr/bin/plutil -convert xml1 "$xml_config"
+expect_rejected "a non-JSON property list" "$xml_config"
+
+unsafe_mode_config="$test_dir/unsafe-mode.json"
+/bin/cp "$valid_config" "$unsafe_mode_config"
+/bin/chmod 644 "$unsafe_mode_config"
+expect_rejected "unsafe permissions" "$unsafe_mode_config"
+
+symlink_config="$test_dir/symlink.json"
+/bin/ln -s "$valid_config" "$symlink_config"
+expect_rejected "a symlink" "$symlink_config"
+
+echo "private local host metadata validation tests passed"

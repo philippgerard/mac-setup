@@ -1,0 +1,104 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE_FILE="$REPO_ROOT/configuration-profiles/disable-icloud-mail-calendar-contacts.mobileconfig"
+OPEN_SCRIPT="$REPO_ROOT/scripts/open-icloud-service-restrictions-profile"
+
+for command_name in jq plutil; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+plutil -lint "$PROFILE_FILE" >/dev/null
+
+plutil -convert json -o - "$PROFILE_FILE" | jq -e '
+  def exact_keys($allowed):
+    ((keys | sort) == ($allowed | sort));
+  def uuid:
+    (type == "string")
+    and test("^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$");
+
+  exact_keys([
+    "PayloadContent",
+    "PayloadDescription",
+    "PayloadDisplayName",
+    "PayloadIdentifier",
+    "PayloadOrganization",
+    "PayloadRemovalDisallowed",
+    "PayloadScope",
+    "PayloadType",
+    "PayloadUUID",
+    "PayloadVersion",
+    "TargetDeviceType"
+  ])
+  and (.PayloadType == "Configuration")
+  and (.PayloadIdentifier == "org.mac-setup.icloud-services-disabled")
+  and (.PayloadUUID == "C5BAD6A3-43F3-43BF-8FB9-BD449FF62C5B")
+  and (.PayloadUUID | uuid)
+  and (.PayloadScope == "User")
+  and (.PayloadRemovalDisallowed == false)
+  and (.PayloadVersion == 1)
+  and (.TargetDeviceType == 5)
+  and (.PayloadContent | length == 1)
+  and (.PayloadContent[0] | exact_keys([
+    "PayloadDescription",
+    "PayloadDisplayName",
+    "PayloadIdentifier",
+    "PayloadType",
+    "PayloadUUID",
+    "PayloadVersion",
+    "allowCloudAddressBook",
+    "allowCloudCalendar",
+    "allowCloudMail"
+  ]))
+  and (.PayloadContent[0].PayloadType == "com.apple.applicationaccess")
+  and (.PayloadContent[0].PayloadIdentifier == "org.mac-setup.icloud-services.restrictions")
+  and (.PayloadContent[0].PayloadUUID == "81F44226-C073-46CE-8F48-52912B66676E")
+  and (.PayloadContent[0].PayloadUUID | uuid)
+  and (.PayloadContent[0].PayloadVersion == 1)
+  and (.PayloadContent[0].allowCloudAddressBook == false)
+  and (.PayloadContent[0].allowCloudCalendar == false)
+  and (.PayloadContent[0].allowCloudMail == false)
+  and (.PayloadContent[0].PayloadUUID != .PayloadUUID)
+' >/dev/null
+
+test_dir="$(/usr/bin/mktemp -d \
+  "${TMPDIR:-/tmp}/mac-setup-icloud-profile-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_dir:-}" && -d "$test_dir" && ! -L "$test_dir" && \
+    "$test_dir" == "${TMPDIR:-/tmp}"/mac-setup-icloud-profile-test.* ]]; then
+    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+malicious_bin="$test_dir/malicious-bin"
+path_marker="$test_dir/untrusted-path-was-used"
+/bin/mkdir -m 700 "$malicious_bin"
+for command_name in cat dirname jq nix open uname; do
+  printf '#!/bin/bash\nprintf used >>%q\nexit 97\n' "$path_marker" \
+    >"$malicious_bin/$command_name"
+  /bin/chmod 700 "$malicious_bin/$command_name"
+done
+
+help_output="$(PATH="$malicious_bin:$PATH" "$OPEN_SCRIPT" --help)"
+[[ "$help_output" == *"Open the reviewed iCloud service restrictions profile"* ]]
+[[ ! -e "$path_marker" ]] || {
+  echo "iCloud profile helper executed a command from the inherited PATH" >&2
+  exit 1
+}
+
+IFS= read -r open_script_shebang <"$OPEN_SCRIPT"
+[[ "$open_script_shebang" == '#!/bin/bash -p' ]] || {
+  echo "iCloud profile helper does not use protected Bash startup" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match literal trust-boundary commands.
+grep -Fq 'source "$REPO_ROOT/scripts/trusted-path"' "$OPEN_SCRIPT"
+grep -Fq 'mac_setup_harden_environment' "$OPEN_SCRIPT"
+
+echo "iCloud service restrictions profile test passed"

@@ -1,0 +1,79 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-validation-bootstrap-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-validation-bootstrap-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fixture_repo="$test_root/repository"
+/bin/mkdir -p "$fixture_repo/scripts"
+/bin/cp "$REPO_ROOT/flake.lock" "$fixture_repo/"
+/bin/cp \
+  "$REPO_ROOT/scripts/run-with-validation-tools" \
+  "$REPO_ROOT/scripts/trusted-nix" \
+  "$REPO_ROOT/scripts/trusted-path" \
+  "$fixture_repo/scripts/"
+/bin/chmod 755 "$fixture_repo/scripts/run-with-validation-tools"
+"$fixture_repo/scripts/run-with-validation-tools" --check-lock >/dev/null
+
+node_name="$(/usr/bin/plutil -extract nodes.root.inputs.nixpkgs \
+  raw -o - "$fixture_repo/flake.lock")"
+/usr/bin/plutil -replace "nodes.$node_name.locked.owner" \
+  -string Unapproved "$fixture_repo/flake.lock"
+if "$fixture_repo/scripts/run-with-validation-tools" --check-lock \
+  >/dev/null 2>&1; then
+  echo "validation-tool bootstrap accepted an unapproved source owner" >&2
+  exit 1
+fi
+
+/bin/cp "$REPO_ROOT/flake.lock" "$fixture_repo/flake.lock"
+/usr/bin/plutil -replace "nodes.$node_name.locked.rev" \
+  -string unsafe "$fixture_repo/flake.lock"
+if "$fixture_repo/scripts/run-with-validation-tools" --check-lock \
+  >/dev/null 2>&1; then
+  echo "validation-tool bootstrap accepted a mutable source revision" >&2
+  exit 1
+fi
+
+if /usr/bin/grep -Fq 'scripts/flake-source' \
+  "$REPO_ROOT/scripts/run-with-validation-tools"; then
+  echo "validation-tool bootstrap depends on a local flake source" >&2
+  exit 1
+fi
+
+missing_tools_block="$(/usr/bin/sed -n \
+  '/if \[\[ "${#missing_validation_tools\[@\]}" -gt 0 \]\]; then/,/^fi$/p' \
+  "$REPO_ROOT/scripts/validate")"
+/usr/bin/grep -Fq 'scripts/run-with-validation-tools' \
+  <<<"$missing_tools_block"
+if /usr/bin/grep -Fq 'scripts/flake-source' <<<"$missing_tools_block"; then
+  echo "validation stores the local source before validation tools are available" >&2
+  exit 1
+fi
+
+if /usr/bin/grep -Fq 'scripts/flake-source' "$REPO_ROOT/setup.sh"; then
+  echo "fresh setup creates a local flake source before the validated rebuild" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016 # Match a literal production variable reference.
+gitleaks_line="$(/usr/bin/grep -n \
+  'gitleaks dir --no-banner --redact "$source_directory"' \
+  "$REPO_ROOT/scripts/flake-source" | /usr/bin/cut -d: -f1)"
+# shellcheck disable=SC2016 # Match a literal production variable reference.
+store_line="$(/usr/bin/grep -n 'store add-path "$source_directory"' \
+  "$REPO_ROOT/scripts/flake-source" | /usr/bin/cut -d: -f1)"
+[[ "$gitleaks_line" =~ ^[0-9]+$ && "$store_line" =~ ^[0-9]+$ && \
+  "$gitleaks_line" -lt "$store_line" ]] || {
+  echo "flake source reaches the Nix store before its private Gitleaks scan" >&2
+  exit 1
+}
+
+echo "validation-tool bootstrap pin tests passed"

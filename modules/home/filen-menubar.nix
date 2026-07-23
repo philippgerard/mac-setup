@@ -1,8 +1,12 @@
 { lib, pkgs, ... }:
 
 let
-  version = "0.1.24";
-  filenNodeVersion = "24.18.0";
+  version = "0.1.26";
+
+  # Upstream recommends this stable legacy release while its replacement is in
+  # beta. nixpkgs builds it as a standalone Bun executable, avoiding the npm
+  # package's obsolete exact-Node-23 engine declaration.
+  filenCli = pkgs.filen-cli;
 
   filenMenubar = pkgs.stdenvNoCC.mkDerivation {
     pname = "filen-menubar";
@@ -10,7 +14,7 @@ let
 
     src = pkgs.fetchurl {
       url = "https://github.com/philippgerard/filen-menubar/releases/download/v${version}/Filen.Menubar_${version}_aarch64.dmg";
-      hash = "sha256-/2xXeBuPonplMDDmZG6IyGzEBvgCRIw/PsguGL4J2eQ=";
+      hash = "sha256-RdL58mRZSpaywSdtoHV0QDk7kx8RrpTm7fUKG65t3L4=";
     };
 
     nativeBuildInputs = [ pkgs.undmg ];
@@ -37,16 +41,26 @@ let
 
   executable = "${filenMenubar}/Applications/Filen Menubar.app/Contents/MacOS/filen-menubar";
   filenCliLauncher = pkgs.writeShellScript "filen" ''
-    exec ${pkgs.fnm}/bin/fnm exec --using=${filenNodeVersion} filen "$@"
+    # This executable is pinned by Nix, so suppress its built-in self-updater.
+    # Force the modern macOS state directory: upstream otherwise prefers a
+    # legacy ~/.filen-cli directory whenever one happens to exist.
+    exec ${filenCli}/bin/filen \
+      --skip-update \
+      --data-dir "$HOME/Library/Application Support/filen-cli" \
+      "$@"
   '';
 in
 {
   home.packages = [ filenMenubar ];
 
   # Finder-launched apps do not inherit the shell PATH. The app searches this
-  # location explicitly, and the launcher keeps its Node runtime inside fnm.
+  # location explicitly, and the launcher supplies the pinned standalone CLI.
   home.file.".local/bin/filen" = {
     source = filenCliLauncher;
+    executable = true;
+  };
+  home.file.".local/bin/filen-menubar" = {
+    source = executable;
     executable = true;
   };
 

@@ -1,4 +1,4 @@
-{ ... }:
+{ lib, ... }:
 
 {
   home.file.".ssh/config".text = ''
@@ -11,6 +11,9 @@
       ServerAliveCountMax 3
   '';
 
-  # Private host entries are restored locally and never committed.
-  home.file.".ssh/config.d/.keep".text = "";
+  # Private host entries are restored locally and never committed. The
+  # activation refuses symlinked/foreign-owned state before restricting it.
+  home.activation.secureSshPrivateState = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+    $DRY_RUN_CMD ${../../scripts/secure-ssh-private-state}
+  '';
 }

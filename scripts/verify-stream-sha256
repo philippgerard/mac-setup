@@ -1,0 +1,36 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$SCRIPT_DIR/trusted-path"
+mac_setup_harden_environment
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: verify-stream-sha256 <expected-sha256> <description>" >&2
+  exit 2
+fi
+
+EXPECTED_HASH="$1"
+DESCRIPTION="$2"
+DESCRIPTION_PATTERN='^[A-Za-z0-9][A-Za-z0-9 ._-]*$'
+
+[[ "$EXPECTED_HASH" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "expected SHA-256 digest has an unsupported format" >&2
+  exit 2
+}
+[[ "$DESCRIPTION" =~ $DESCRIPTION_PATTERN ]] || {
+  echo "verification description has an unsupported format" >&2
+  exit 2
+}
+
+actual_hash="$(/usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')" || {
+  echo "$DESCRIPTION could not be hashed" >&2
+  exit 1
+}
+
+[[ "$actual_hash" == "$EXPECTED_HASH" ]] || {
+  echo "$DESCRIPTION did not round-trip through 1Password exactly" >&2
+  exit 1
+}

@@ -1,30 +1,77 @@
-#!/bin/bash
+#!/bin/bash -p
 
 set -euo pipefail
+umask 077
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 LOCAL_CONFIG_JSON="$REPO_ROOT/.local/config.json"
-LOCAL_CONFIG_NIX="$REPO_ROOT/.local/config.nix"
-FLAKE_REF="path:$REPO_ROOT"
 MODE="${1:-build}"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
 
-[[ -f "$LOCAL_CONFIG_JSON" || -f "$LOCAL_CONFIG_NIX" ]] || {
-  echo "missing private local host metadata; run setup.sh first" >&2
-  exit 1
+NIX_BIN="$(mac_setup_trusted_nix)"
+EXPECTED_USERNAME="$(/usr/bin/id -un)"
+EXPECTED_HOME="$HOME"
+EXPECTED_HOST="mini"
+
+"$REPO_ROOT/scripts/validate-local-config" \
+  "$LOCAL_CONFIG_JSON" "$EXPECTED_USERNAME" "$EXPECTED_HOME" "$EXPECTED_HOST" \
+  >/dev/null
+"$REPO_ROOT/scripts/validate"
+FLAKE_REF="$("$REPO_ROOT/scripts/flake-source")"
+
+temp_base="${TMPDIR:-/tmp}"
+temp_base="${temp_base%/}"
+snapshot_dir="$(/usr/bin/mktemp -d "$temp_base/mac-setup-host-config.XXXXXX")"
+LOCAL_CONFIG_SNAPSHOT="$snapshot_dir/config.json"
+cleanup() {
+  if [[ -n "${snapshot_dir:-}" && -d "$snapshot_dir" && \
+    ! -L "$snapshot_dir" && \
+    "$snapshot_dir" == "$temp_base"/mac-setup-host-config.* ]]; then
+    /bin/rm -rf -- "$snapshot_dir" >/dev/null 2>&1 || true
+  fi
 }
+trap cleanup EXIT
+/bin/chmod 700 "$snapshot_dir"
+/bin/cp "$LOCAL_CONFIG_JSON" "$LOCAL_CONFIG_SNAPSHOT"
+/bin/chmod 600 "$LOCAL_CONFIG_SNAPSHOT"
+"$REPO_ROOT/scripts/validate-local-config" \
+  "$LOCAL_CONFIG_SNAPSHOT" "$EXPECTED_USERNAME" "$EXPECTED_HOME" \
+  "$EXPECTED_HOST" >/dev/null
+snapshot_hash="$(/usr/bin/shasum -a 256 "$LOCAL_CONFIG_SNAPSHOT" | \
+  /usr/bin/awk '{print $1}')"
 
-command -v nix >/dev/null 2>&1 || {
-  echo "nix is not available on PATH" >&2
-  exit 1
+assert_snapshot_unchanged() {
+  local current_hash
+
+  "$REPO_ROOT/scripts/validate-local-config" \
+    "$LOCAL_CONFIG_SNAPSHOT" "$EXPECTED_USERNAME" "$EXPECTED_HOME" \
+    "$EXPECTED_HOST" >/dev/null
+  current_hash="$(/usr/bin/shasum -a 256 "$LOCAL_CONFIG_SNAPSHOT" | \
+    /usr/bin/awk '{print $1}')"
+  [[ "$current_hash" == "$snapshot_hash" ]] || {
+    echo "validated private host metadata snapshot changed during rebuild" >&2
+    exit 1
+  }
 }
 
 case "$MODE" in
   build)
-    nix build "$FLAKE_REF#darwinConfigurations.mini.system"
+    assert_snapshot_unchanged
+    MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG_SNAPSHOT" \
+      "$NIX_BIN" build --impure "$FLAKE_REF#darwinConfigurations.mini.system"
     ;;
   switch)
-    nix build "$FLAKE_REF#darwinConfigurations.mini.system"
-    sudo -H nix run "$FLAKE_REF#darwin-rebuild" -- switch --flake "$FLAKE_REF#mini"
+    assert_snapshot_unchanged
+    MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG_SNAPSHOT" \
+      "$NIX_BIN" build --impure "$FLAKE_REF#darwinConfigurations.mini.system"
+    assert_snapshot_unchanged
+    /usr/bin/sudo -H /usr/bin/env MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG_SNAPSHOT" \
+      "$NIX_BIN" run --impure "$FLAKE_REF#darwin-rebuild" -- \
+        switch --impure --flake "$FLAKE_REF#mini"
     ;;
   *)
     echo "usage: scripts/rebuild [build|switch]" >&2

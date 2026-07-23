@@ -1,15 +1,55 @@
-#!/bin/bash
+#!/bin/bash -p
 
 set -euo pipefail
+umask 077
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
 
-command -v nix >/dev/null 2>&1 || {
-  echo "nix is not available on PATH" >&2
+temp_base="${TMPDIR:-/tmp}"
+temp_base="${temp_base%/}"
+work_dir="$(/usr/bin/mktemp -d "$temp_base/mac-setup-update.XXXXXX")"
+source_dir="$work_dir/source"
+/bin/mkdir -m 700 "$source_dir"
+lock_tmp=""
+cleanup() {
+  if [[ -n "${lock_tmp:-}" && -f "$lock_tmp" && ! -L "$lock_tmp" ]]; then
+    /bin/rm -f -- "$lock_tmp" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${work_dir:-}" && -d "$work_dir" && ! -L "$work_dir" && \
+    "$work_dir" == "$temp_base"/mac-setup-update.* ]]; then
+    /bin/rm -rf -- "$work_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+"$REPO_ROOT/scripts/flake-source" --copy-to "$source_dir" >/dev/null
+(
+  cd "$source_dir"
+  "$NIX_BIN" flake update
+)
+
+[[ -f "$source_dir/flake.lock" && ! -L "$source_dir/flake.lock" ]] || {
+  echo "Nix did not produce a safe updated lock file" >&2
+  exit 1
+}
+[[ -f "$REPO_ROOT/flake.lock" && ! -L "$REPO_ROOT/flake.lock" && \
+  -O "$REPO_ROOT/flake.lock" ]] || {
+  echo "repository lock file is unsafe" >&2
   exit 1
 }
 
-nix flake update "path:$REPO_ROOT"
+lock_tmp="$(/usr/bin/mktemp "$REPO_ROOT/.flake.lock.XXXXXX")"
+/bin/cp "$source_dir/flake.lock" "$lock_tmp"
+/bin/chmod 644 "$lock_tmp"
+/bin/mv "$lock_tmp" "$REPO_ROOT/flake.lock"
+lock_tmp=""
+
 "$REPO_ROOT/scripts/validate"
 "$REPO_ROOT/scripts/rebuild" build
 

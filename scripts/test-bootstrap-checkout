@@ -1,0 +1,251 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SETUP_SCRIPT="$REPO_ROOT/setup.sh"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-bootstrap-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-bootstrap-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+test_home="$test_root/home"
+seed_repo="$test_root/seed"
+remote_repo="$test_root/remote.git"
+/bin/mkdir -m 700 "$test_home"
+/usr/bin/git init -q "$seed_repo"
+/usr/bin/git -C "$seed_repo" config user.name Test
+/usr/bin/git -C "$seed_repo" config user.email invalid
+/usr/bin/git -C "$seed_repo" config commit.gpgSign false
+printf '%s\n' first >"$seed_repo/value"
+/bin/ln -s value "$seed_repo/value-link"
+/usr/bin/git -C "$seed_repo" add value
+/usr/bin/git -C "$seed_repo" add value-link
+/usr/bin/git -C "$seed_repo" commit -q -m first
+first_revision="$(/usr/bin/git -C "$seed_repo" rev-parse HEAD)"
+printf '%s\n' second >"$seed_repo/value"
+/usr/bin/git -C "$seed_repo" commit -q -am second
+second_revision="$(/usr/bin/git -C "$seed_repo" rev-parse HEAD)"
+/usr/bin/git init -q --bare "$remote_repo"
+/usr/bin/git -C "$seed_repo" remote add origin "$remote_repo"
+/usr/bin/git -C "$seed_repo" push -q origin HEAD:main
+/usr/bin/git -C "$remote_repo" symbolic-ref HEAD refs/heads/main
+
+# Bootstrap Git operations must ignore user/system rewrites and hooks.
+git_hook_dir="$test_root/git-hooks"
+git_hook_marker="$test_root/global-post-checkout-ran"
+redirected_remote="$test_root/redirected.git"
+/bin/mkdir -m 700 "$git_hook_dir"
+[[ "$git_hook_marker" =~ ^/[A-Za-z0-9_./-]+$ ]]
+printf '#!/bin/sh\nprintf used >"%s"\n' "$git_hook_marker" \
+  >"$git_hook_dir/post-checkout"
+/bin/chmod 700 "$git_hook_dir/post-checkout"
+/usr/bin/git config --file "$test_home/.gitconfig" \
+  "url.$redirected_remote.insteadOf" "$remote_repo"
+/usr/bin/git config --file "$test_home/.gitconfig" core.hooksPath "$git_hook_dir"
+
+run_checkout() {
+  HOME="$test_home" \
+    MAC_SETUP_TEST_CHECKOUT_ONLY=1 \
+    MAC_SETUP_TEST_REPO_URL="$remote_repo" \
+    "$SETUP_SCRIPT" "$@"
+}
+
+run_checkout --revision "$first_revision" >/dev/null
+default_parent="$test_home/.config"
+default_checkout="$default_parent/mac-setup"
+[[ -d "$default_parent" && ! -L "$default_parent" && -O "$default_parent" ]]
+[[ "$(/usr/bin/stat -f '%Lp' "$default_parent")" == "700" ]]
+[[ "$(/usr/bin/git -C "$default_checkout" rev-parse HEAD)" == "$first_revision" ]]
+[[ -L "$default_checkout/value-link" ]]
+[[ "$(/usr/bin/readlink "$default_checkout/value-link")" == "value" ]]
+[[ ! -e "$git_hook_marker" ]] || {
+  echo "bootstrap executed a hook from global Git config" >&2
+  exit 1
+}
+
+/bin/chmod 777 "$default_parent"
+if run_checkout --config-dir "$default_checkout" >/dev/null 2>&1; then
+  echo "bootstrap accepted an existing checkout below an unsafe parent" >&2
+  exit 1
+fi
+/bin/chmod 700 "$default_parent"
+
+# A plain rerun uses a genuinely pre-existing checkout without changing it.
+run_checkout >/dev/null
+[[ "$(/usr/bin/git -C "$default_checkout" rev-parse HEAD)" == "$first_revision" ]]
+
+printf '%s\n' modified >"$default_checkout/value"
+if run_checkout --revision "$first_revision" >/dev/null 2>&1; then
+  echo "bootstrap accepted tracked changes in an explicitly pinned checkout" >&2
+  exit 1
+fi
+[[ "$(<"$default_checkout/value")" == "modified" ]]
+printf '%s\n' first >"$default_checkout/value"
+
+# Replacement refs must not let a different tree impersonate the pinned SHA.
+/usr/bin/git -C "$default_checkout" replace \
+  "$first_revision" "$second_revision"
+/usr/bin/git -C "$default_checkout" checkout -q --detach -f "$first_revision"
+[[ "$(<"$default_checkout/value")" == "second" ]]
+if run_checkout --revision "$first_revision" >/dev/null 2>&1; then
+  echo "bootstrap accepted a replacement tree for the explicitly pinned commit" >&2
+  exit 1
+fi
+/usr/bin/git -C "$default_checkout" replace -d "$first_revision" >/dev/null
+GIT_NO_REPLACE_OBJECTS=1 /usr/bin/git -C "$default_checkout" \
+  checkout -q --detach -f "$first_revision"
+[[ "$(<"$default_checkout/value")" == "first" ]]
+
+# A repository-local clean filter must never execute during pin verification.
+clean_filter_marker="$test_root/local-clean-filter-ran"
+clean_filter_script="$test_root/local-clean-filter"
+[[ "$clean_filter_marker" =~ ^/[A-Za-z0-9_./-]+$ ]]
+printf '#!/bin/sh\nprintf used >"%s"\n/bin/cat\n' "$clean_filter_marker" \
+  >"$clean_filter_script"
+/bin/chmod 700 "$clean_filter_script"
+printf '%s\n' 'value filter=bootstrap-test' \
+  >"$default_checkout/.git/info/attributes"
+/usr/bin/git -C "$default_checkout" config \
+  filter.bootstrap-test.clean "$clean_filter_script"
+run_checkout --revision "$first_revision" >/dev/null
+[[ ! -e "$clean_filter_marker" ]] || {
+  echo "bootstrap executed a repository-local clean filter" >&2
+  exit 1
+}
+
+# An explicit pin must match an existing checkout, but still never changes it.
+if run_checkout --revision "$second_revision" >/dev/null 2>&1; then
+  echo "bootstrap ignored an explicit revision mismatch" >&2
+  exit 1
+fi
+[[ "$(/usr/bin/git -C "$default_checkout" rev-parse HEAD)" == "$first_revision" ]]
+
+failed_checkout="$default_parent/failed"
+if run_checkout --config-dir "$failed_checkout" --revision missing-revision \
+  >/dev/null 2>&1; then
+  echo "checkout unexpectedly accepted a missing revision" >&2
+  exit 1
+fi
+[[ ! -e "$failed_checkout" && ! -L "$failed_checkout" ]] || {
+  echo "failed revision left a checkout at the final path" >&2
+  exit 1
+}
+if /usr/bin/find "$default_parent" -mindepth 1 -maxdepth 1 \
+  -name '.mac-setup-checkout.*' -print -quit | /usr/bin/grep -q .; then
+  echo "failed revision left a transactional checkout directory" >&2
+  exit 1
+fi
+
+run_checkout --config-dir "$failed_checkout" --revision main >/dev/null
+[[ "$(/usr/bin/git -C "$failed_checkout" rev-parse HEAD)" == "$second_revision" ]]
+[[ ! -e "$git_hook_marker" ]] || {
+  echo "bootstrap executed a hook from global Git config" >&2
+  exit 1
+}
+
+malicious_python="$test_root/malicious-python"
+python_marker="$test_root/python-sitecustomize-ran"
+python_checkout="$default_parent/python-isolation"
+/bin/mkdir -m 700 "$malicious_python"
+printf '%s\n' \
+  'import os' \
+  'open(os.environ["MAC_SETUP_PYTHON_MARKER"], "w").write("used")' \
+  >"$malicious_python/sitecustomize.py"
+export PYTHONPATH="$malicious_python"
+export MAC_SETUP_PYTHON_MARKER="$python_marker"
+run_checkout --config-dir "$python_checkout" --revision "$first_revision" \
+  >/dev/null
+unset PYTHONPATH MAC_SETUP_PYTHON_MARKER
+[[ ! -e "$python_marker" ]] || {
+  echo "transactional checkout imported ambient Python startup code" >&2
+  exit 1
+}
+
+curl_home="$test_root/curl-home"
+curl_marker="$test_root/curlrc-was-used"
+/bin/mkdir -m 700 "$curl_home"
+printf 'output = "%s"\n' "$curl_marker" >"$curl_home/.curlrc"
+HOME="$curl_home" /usr/bin/curl -qfsSL --proto '=file' \
+  "file://$seed_repo/value" >/dev/null
+[[ ! -e "$curl_marker" ]] || {
+  echo "bootstrap curl pattern loaded an ambient curlrc" >&2
+  exit 1
+}
+
+/bin/chmod 777 "$failed_checkout"
+if run_checkout --config-dir "$failed_checkout" >/dev/null 2>&1; then
+  echo "bootstrap accepted a group/world-writable existing checkout" >&2
+  exit 1
+fi
+/bin/chmod 700 "$failed_checkout"
+
+/bin/mkdir "$failed_checkout/nested"
+if run_checkout --config-dir "$failed_checkout/nested" >/dev/null 2>&1; then
+  echo "bootstrap accepted a nested path as an existing checkout root" >&2
+  exit 1
+fi
+
+unsafe_parent="$test_home/unsafe-parent"
+/bin/mkdir -m 700 "$unsafe_parent"
+/bin/chmod 777 "$unsafe_parent"
+if run_checkout --config-dir "$unsafe_parent/config" >/dev/null 2>&1; then
+  echo "bootstrap accepted a group/world-writable config parent" >&2
+  exit 1
+fi
+[[ ! -e "$unsafe_parent/config" && ! -L "$unsafe_parent/config" ]]
+
+if HOME=/ MAC_SETUP_TEST_CHECKOUT_ONLY=1 \
+  MAC_SETUP_TEST_REPO_URL="$remote_repo" "$SETUP_SCRIPT" \
+  >/dev/null 2>&1; then
+  echo "bootstrap accepted a HOME not owned by the desktop user" >&2
+  exit 1
+fi
+/bin/chmod 777 "$test_home"
+if run_checkout >/dev/null 2>&1; then
+  echo "bootstrap accepted a group/world-writable HOME" >&2
+  exit 1
+fi
+/bin/chmod 700 "$test_home"
+if /bin/bash "$SETUP_SCRIPT" --help >/dev/null 2>&1; then
+  echo "bootstrap accepted an invocation without protected Bash mode" >&2
+  exit 1
+fi
+
+exported_function_marker="$test_root/exported-function-ran"
+# shellcheck disable=SC2329 # Exported only for the protected-bootstrap regression.
+function mac_setup_exported_test_function() {
+  printf used >"$exported_function_marker"
+}
+export -f mac_setup_exported_test_function
+if run_checkout --config-dir "$test_home/exported-function-checkout" \
+  >/dev/null 2>&1; then
+  echo "bootstrap accepted an environment containing an exported Bash function" >&2
+  exit 1
+fi
+unset -f mac_setup_exported_test_function
+[[ ! -e "$exported_function_marker" ]] || {
+  echo "an exported Bash function reached a bootstrap descendant" >&2
+  exit 1
+}
+# UID 0 cannot be exercised in this non-privileged test; preserve the early guard.
+# shellcheck disable=SC2016 # Match the literal production guard.
+/usr/bin/grep -Fq '[[ "$USER_ID" != "0" ]]' "$SETUP_SCRIPT"
+# shellcheck disable=SC2016 # Match the literal documented shell variable.
+if [[ "$(/usr/bin/grep -Fc \
+  "/usr/bin/curl -qfsSL --proto '=https' --tlsv1.2" "$SETUP_SCRIPT")" -ne 2 ]] || \
+  ! /usr/bin/grep -Fq \
+    "/usr/bin/curl -qfsSL --proto '=https' --tlsv1.2" \
+    "$REPO_ROOT/README.md" || \
+  ! /usr/bin/grep -Fq '| /bin/bash -p -s -- --revision "$revision"' \
+  "$REPO_ROOT/README.md"; then
+  echo "documented remote bootstrap does not preserve protected Bash mode" >&2
+  exit 1
+fi
+
+echo "transactional bootstrap checkout tests passed"

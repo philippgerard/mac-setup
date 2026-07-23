@@ -1,70 +1,321 @@
-#!/bin/bash
+#!/bin/bash -p
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-git
+source "$REPO_ROOT/scripts/trusted-git"
 cd "$REPO_ROOT"
 
-scan() {
-  rg -n --hidden \
-    --glob '!.git/**' \
-    --glob '!.local/**' \
-    --glob '!scripts/check-public-safety' \
-    "$1" . || true
+PUBLIC_REPOSITORY_URL="https://github.com/philippgerard/mac-setup"
+PUBLIC_IDENTITY_NAME="${PUBLIC_REPOSITORY_URL#https://github.com/}"
+PUBLIC_IDENTITY_NAME="${PUBLIC_IDENTITY_NAME%%/*}"
+
+[[ -n "$HOME" && "$HOME" == /* && -d "$HOME" && ! -L "$HOME" && \
+  -O "$HOME" ]] || {
+  echo "public-safety scan requires an owned physical HOME directory" >&2
+  exit 1
 }
 
-scan_literal() {
-  rg -n -F --hidden \
-    --glob '!.git/**' \
-    --glob '!.local/**' \
-    --glob '!scripts/check-public-safety' \
-    -- "$1" . || true
+[[ "$(mac_setup_safe_git "$REPO_ROOT" \
+  rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] || {
+  echo "public-safety scan requires a Git checkout" >&2
+  exit 1
+}
+
+if [[ -n "$(mac_setup_safe_git "$REPO_ROOT" ls-files --unmerged)" ]]; then
+  echo "public-safety scan refuses an unmerged Git index" >&2
+  exit 1
+fi
+
+indexed_paths=()
+tracked_private_path=0
+unsafe_index_path=0
+while IFS= read -r -d '' indexed_path; do
+  case "$indexed_path" in
+    .[lL][oO][cC][aA][lL]|.[lL][oO][cC][aA][lL]/*)
+      tracked_private_path=1
+      ;;
+    /*|..|../*|*/../*)
+      unsafe_index_path=1
+      ;;
+  esac
+  indexed_paths+=("$indexed_path")
+done < <(mac_setup_safe_git "$REPO_ROOT" ls-files --cached -z)
+
+[[ "$tracked_private_path" -eq 0 ]] || {
+  echo "public-safety scan refuses a tracked case-insensitive .local path" >&2
+  exit 1
+}
+[[ "$unsafe_index_path" -eq 0 ]] || {
+  echo "public-safety scan refuses an unsafe Git index path" >&2
+  exit 1
+}
+
+# Validate the same live file/type boundary used by scripts/flake-source before
+# opening any working-tree path. This prevents following a replaced directory
+# or file symlink outside the checkout.
+for indexed_path in "${indexed_paths[@]}"; do
+  source_path="$REPO_ROOT/$indexed_path"
+  [[ -e "$source_path" || -L "$source_path" ]] || continue
+
+  ancestor_path="$(/usr/bin/dirname "$source_path")"
+  while [[ "$ancestor_path" != "$REPO_ROOT" ]]; do
+    [[ "$ancestor_path" == "$REPO_ROOT"/* && ! -L "$ancestor_path" ]] || {
+      echo "public-safety scan refuses a tracked path through a symlinked ancestor" >&2
+      exit 1
+    }
+    ancestor_path="$(/usr/bin/dirname "$ancestor_path")"
+  done
+
+  [[ -f "$source_path" || -L "$source_path" ]] || {
+    echo "public-safety scan refuses a tracked path with an unsupported live type" >&2
+    exit 1
+  }
+done
+
+grep_string_matches() {
+  local mode="$1"
+  local pattern="$2"
+  local value="$3"
+  local output
+  local status
+
+  if output="$(printf '%s\n' "$value" | \
+    /usr/bin/grep -a -o "-$mode" -e "$pattern" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || {
+    printf 'public-safety string scanner failed in %s mode (pattern length %s)\n' \
+      "$mode" "${#pattern}" >&2
+    return 2
+  }
+  return 1
+}
+
+grep_file_matches() {
+  local mode="$1"
+  local pattern="$2"
+  local file="$3"
+  local output
+  local status
+
+  if output="$(/usr/bin/grep -a -o "-$mode" -e "$pattern" -- "$file" 2>&1)"; then
+    printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || {
+    echo "public-safety file scanner failed" >&2
+    return 2
+  }
+  return 1
+}
+
+git_index_matches() {
+  local mode="$1"
+  local pattern="$2"
+  local output
+  local status
+
+  if output="$(mac_setup_safe_git "$REPO_ROOT" \
+    grep --cached -a -h -o "-$mode" -e "$pattern" -- . 2>&1)"; then
+    printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || {
+    echo "public-safety Git-index scanner failed" >&2
+    return 2
+  }
+  return 1
+}
+
+all_matches_allowed() {
+  local allow_kind="$1"
+  local match
+
+  while IFS= read -r match; do
+    [[ -n "$match" ]] || continue
+    case "$allow_kind:$match" in
+      email:git@github.com|home:/Users/macuser)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}
+
+output_has_disallowed_match() {
+  local allow_kind="$1"
+  local output="$2"
+
+  ! printf '%s\n' "$output" | all_matches_allowed "$allow_kind"
+}
+
+source_has_disallowed_match() {
+  local mode="$1"
+  local pattern="$2"
+  local allow_kind="$3"
+  local matches
+  local source_path
+  local status
+  local indexed_path
+  local symlink_target
+
+  for indexed_path in "${indexed_paths[@]}"; do
+    if matches="$(grep_string_matches "$mode" "$pattern" "$indexed_path")"; then
+      output_has_disallowed_match "$allow_kind" "$matches" && return 0
+    else
+      status=$?
+      [[ "$status" -eq 1 ]] || return 2
+    fi
+
+    source_path="$REPO_ROOT/$indexed_path"
+    [[ -e "$source_path" || -L "$source_path" ]] || continue
+    if [[ -L "$source_path" ]]; then
+      symlink_target="$(/usr/bin/readlink "$source_path")" || return 2
+      if matches="$(grep_string_matches \
+        "$mode" "$pattern" "$symlink_target")"; then
+        output_has_disallowed_match "$allow_kind" "$matches" && return 0
+      else
+        status=$?
+        [[ "$status" -eq 1 ]] || return 2
+      fi
+    else
+      if matches="$(grep_file_matches "$mode" "$pattern" "$source_path")"; then
+        output_has_disallowed_match "$allow_kind" "$matches" && return 0
+      else
+        status=$?
+        [[ "$status" -eq 1 ]] || return 2
+      fi
+    fi
+  done
+
+  if matches="$(git_index_matches "$mode" "$pattern")"; then
+    output_has_disallowed_match "$allow_kind" "$matches" && return 0
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] || return 2
+  fi
+  return 1
 }
 
 failures=""
+record_pattern() {
+  local label="$1"
+  local mode="$2"
+  local pattern="$3"
+  local allow_kind="$4"
+  local status
 
-email_matches="$({
-  scan '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' |
-    grep -v -E '(ssh://git@|git@github\.com:)' || true
-})"
-[[ -z "$email_matches" ]] || failures+=$'\nemail address:\n'"$email_matches"
-
-home_matches="$(scan '/Users/[A-Za-z0-9._-]+' | grep -v '/Users/macuser' || true)"
-[[ -z "$home_matches" ]] || failures+=$'\nabsolute home path:\n'"$home_matches"
-
-key_matches="$(scan '(ssh-(rsa|ed25519)|ecdsa-[^[:space:]]+)[[:space:]]+[A-Za-z0-9+/=]{20,}')"
-[[ -z "$key_matches" ]] || failures+=$'\nSSH public key:\n'"$key_matches"
-
-secret_matches="$(scan '(BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,})')"
-[[ -z "$secret_matches" ]] || failures+=$'\nsecret-like value:\n'"$secret_matches"
-
-identity_matches="$(scan '(userName[[:space:]]*=|userEmail[[:space:]]*=|user\.signingKey[[:space:]]*=)')"
-[[ -z "$identity_matches" ]] || failures+=$'\nembedded Git identity:\n'"$identity_matches"
-
-literal_failure=0
-check_local_literal() {
-  local literal="$1"
-  local content_matches
-  local path
-
-  [[ ${#literal} -ge 4 ]] || return 0
-
-  content_matches="$(scan_literal "$literal" |
-    grep -v -E '(github\.com/[^/]+/(mac-setup|filen-menubar)(\.git)?|raw\.githubusercontent\.com/[^/]+/mac-setup/)' || true)"
-  [[ -z "$content_matches" ]] || literal_failure=1
-
-  while IFS= read -r -d '' path; do
-    if [[ "$path" == *"$literal"* ]]; then
-      literal_failure=1
-    fi
-  done < <(find . -path './.git' -prune -o -path './.local' -prune -o -print0)
+  if source_has_disallowed_match "$mode" "$pattern" "$allow_kind"; then
+    failures+=$'\n'"$label"
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" -eq 1 ]] || {
+    echo "public-safety scan aborted because a scanner failed" >&2
+    exit 1
+  }
 }
 
-check_local_literal "$(id -un 2>/dev/null || true)"
-check_local_literal "$(basename "$HOME")"
-check_local_literal "$(git config --global --get user.name 2>/dev/null || true)"
-check_local_literal "$(git config --global --get user.email 2>/dev/null || true)"
-[[ "$literal_failure" -eq 0 ]] || failures+=$'\ncurrent-machine identity literal found outside the public repository locator'
+record_pattern "email address" E \
+  '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' email
+record_pattern "absolute home path" E '/Users/[A-Za-z0-9._-]+' home
+record_pattern "SSH public key" E \
+  '(ssh-(rsa|ed25519)|ecdsa-[^[:space:]]+)[[:space:]]+[A-Za-z0-9+/=]{20,}' none
+record_pattern "secret-like value" E \
+  '(BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|Bearer[[:space:]]+[A-Za-z0-9._-]{20,})' none
+record_pattern "embedded Git identity" E \
+  '(userName[[:space:]]*=|userEmail[[:space:]]*=|user\.signingKey[[:space:]]*=)' none
+
+local_identity_literals=()
+add_local_identity_literal() {
+  local literal="$1"
+
+  [[ -n "$literal" ]] || return 0
+  [[ "$literal" != *[[:cntrl:]]* ]] || {
+    echo "local Git identity contains an unsafe control character" >&2
+    exit 1
+  }
+  local_identity_literals+=("$literal")
+}
+
+add_local_identity_literal "$(/usr/bin/id -un 2>/dev/null || true)"
+add_local_identity_literal "$(/usr/bin/basename "$HOME")"
+
+for config_key in user.name user.email; do
+  if config_value="$(mac_setup_safe_global_git_config --get "$config_key" 2>/dev/null)"; then
+    add_local_identity_literal "$config_value"
+  else
+    config_status=$?
+    [[ "$config_status" -eq 1 ]] || {
+      echo "unable to read the global Git identity safely" >&2
+      exit 1
+    }
+  fi
+done
+
+private_identity_file="$HOME/.config/git/identity.inc"
+if [[ -e "$private_identity_file" || -L "$private_identity_file" ]]; then
+  for identity_directory in "$HOME/.config" "$HOME/.config/git"; do
+    [[ -d "$identity_directory" && ! -L "$identity_directory" && \
+      -O "$identity_directory" ]] || {
+      echo "private Git identity directory is unsafe" >&2
+      exit 1
+    }
+  done
+  [[ -f "$private_identity_file" && ! -L "$private_identity_file" && \
+    -O "$private_identity_file" ]] || {
+    echo "private Git identity file is unsafe" >&2
+    exit 1
+  }
+  [[ "$(/usr/bin/stat -f '%Lp' "$private_identity_file")" == 600 ]] || {
+    echo "private Git identity file must have mode 0600" >&2
+    exit 1
+  }
+  for config_key in user.name user.email; do
+    if config_value="$(mac_setup_safe_git_config_file \
+      "$private_identity_file" --get "$config_key" 2>/dev/null)"; then
+      add_local_identity_literal "$config_value"
+    else
+      config_status=$?
+      [[ "$config_status" -eq 1 ]] || {
+        echo "unable to read the private Git identity safely" >&2
+        exit 1
+      }
+    fi
+  done
+fi
+
+for identity_literal in "${local_identity_literals[@]}"; do
+  [[ ${#identity_literal} -ge 4 ]] || continue
+  # The canonical public repository owner is intentionally public and is the
+  # only accepted public commit display name. Every other machine/user literal
+  # is prohibited in both snapshots and in indexed path names.
+  [[ "$identity_literal" == "$PUBLIC_IDENTITY_NAME" ]] && continue
+  if source_has_disallowed_match F "$identity_literal" none; then
+    failures+=$'\ncurrent-machine identity literal'
+  else
+    identity_status=$?
+    [[ "$identity_status" -eq 1 ]] || {
+      echo "public-safety literal scanner failed" >&2
+      exit 1
+    }
+  fi
+done
 
 if [[ -n "$failures" ]]; then
   printf 'Public-safety scan failed:%s\n' "$failures" >&2

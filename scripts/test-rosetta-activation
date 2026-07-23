@@ -1,0 +1,58 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLAKE_REF="$("$REPO_ROOT/scripts/flake-source")"
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+
+for command_name in grep sed; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+activation_script="$(
+  "$NIX_BIN" eval --raw \
+    "$FLAKE_REF#darwinConfigurations.mini.config.system.activationScripts.script.text"
+)"
+
+rosetta_lines="$(
+  grep -nF \
+    'rosetta_runtime="/Library/Apple/usr/libexec/oah/libRosettaRuntime"' \
+    <<<"$activation_script" | sed 's/:.*//'
+)"
+homebrew_line="$(
+  grep -nF -m 1 'Homebrew bundle' <<<"$activation_script" | sed 's/:.*//'
+)"
+
+[[ "$(grep -c . <<<"$rosetta_lines")" -eq 1 ]] || {
+  echo "Rosetta prerequisite handling must run exactly once" >&2
+  exit 1
+}
+[[ "$homebrew_line" =~ ^[0-9]+$ ]] || {
+  echo "Homebrew activation marker is missing" >&2
+  exit 1
+}
+
+first_rosetta_line="$(sed -n '1p' <<<"$rosetta_lines")"
+[[ "$first_rosetta_line" -lt "$homebrew_line" ]] || {
+  echo "Rosetta installation does not precede Homebrew activation" >&2
+  exit 1
+}
+
+[[ "$(grep -Fc -- '--install-rosetta --agree-to-license' \
+  <<<"$activation_script")" -eq 1 ]] || {
+  echo "Rosetta activation does not use the expected reviewed installer" >&2
+  exit 1
+}
+
+if grep -Fq '/Applications/Xcode.app/' <<<"$activation_script"; then
+  echo "privileged activation executes an application from /Applications" >&2
+  exit 1
+fi
+
+echo "Rosetta activation ordering tests passed"

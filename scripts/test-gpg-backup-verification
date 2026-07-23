@@ -1,0 +1,62 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+VERIFIER="$REPO_ROOT/scripts/verify-stream-sha256"
+BACKUP_SCRIPT="$REPO_ROOT/scripts/backup-gpg-to-1password"
+RESTORE_SCRIPT="$REPO_ROOT/scripts/restore-gpg-from-1password"
+
+fixture='-----BEGIN TEST DATA-----
+password-free regression fixture
+-----END TEST DATA-----'
+fixture_hash="$(printf '%s\n' "$fixture" |
+  /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+
+printf '%s\n' "$fixture" |
+  "$VERIFIER" "$fixture_hash" "GPG secret-key document"
+printf '%s\n' "$fixture" |
+  "$VERIFIER" "$fixture_hash" "GPG ownertrust document"
+
+if printf '%s\n' "${fixture}altered" |
+  "$VERIFIER" "$fixture_hash" "GPG secret-key document" >/dev/null 2>&1; then
+  echo "altered GPG backup attachment was accepted" >&2
+  exit 1
+fi
+
+if printf '%s' "$fixture" |
+  "$VERIFIER" "$fixture_hash" "GPG ownertrust document" >/dev/null 2>&1; then
+  echo "truncated GPG backup attachment was accepted" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$fixture" |
+  "$VERIFIER" "not-a-sha256-digest" "GPG secret-key document" >/dev/null 2>&1; then
+  echo "invalid expected attachment digest was accepted" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$fixture" |
+  "$VERIFIER" "$fixture_hash" $'unsafe\ndescription' >/dev/null 2>&1; then
+  echo "unsafe attachment description was accepted" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2016 # Match literal production variable references.
+[[ "$(/usr/bin/grep -Fc '"$VERIFY_STREAM" "$secret_export_hash" "GPG secret-key document"' \
+  "$BACKUP_SCRIPT")" -eq 2 ]]
+# shellcheck disable=SC2016 # Match literal production variable references.
+[[ "$(/usr/bin/grep -Fc '"$VERIFY_STREAM" "$ownertrust_export_hash" "GPG ownertrust document"' \
+  "$BACKUP_SCRIPT")" -eq 2 ]]
+for gpg_script in "$BACKUP_SCRIPT" "$RESTORE_SCRIPT"; do
+  # shellcheck disable=SC2016 # Match the fixed production GnuPG boundary.
+  /usr/bin/grep -Fq 'GNUPGHOME="$(mac_setup_canonical_private_path' "$gpg_script"
+  /usr/bin/grep -Fq 'export GNUPGHOME' "$gpg_script"
+  if HOME="$REPO_ROOT" GNUPGHOME="${TMPDIR:-/tmp}/ambient-gnupg" \
+    "$gpg_script" >/dev/null 2>&1; then
+    echo "GPG helper accepted a private home inside the public checkout" >&2
+    exit 1
+  fi
+done
+
+echo "GPG backup attachment verification tests passed"

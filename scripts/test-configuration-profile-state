@@ -1,0 +1,297 @@
+#!/bin/bash
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_SCRIPT="$REPO_ROOT/scripts/configuration-profile-state"
+
+for command_name in jq mktemp plutil; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+TEST_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-profile-test.XXXXXX")"
+chmod 700 "$TEST_TMP_DIR"
+SOURCE_JSON="$TEST_TMP_DIR/source.json"
+SOURCE_PROFILE="$TEST_TMP_DIR/source.mobileconfig"
+CREDENTIAL_SOURCE="$TEST_TMP_DIR/source-with-credential.mobileconfig"
+UNSUPPORTED_SOURCE="$TEST_TMP_DIR/source-with-unsupported-policy.mobileconfig"
+EXACT_JSON="$TEST_TMP_DIR/exact.json"
+INSTALLED_JSON="$TEST_TMP_DIR/installed.json"
+PROFILE_USER="$(id -un)"
+AT_SIGN='@'
+FIXTURE_ADDRESS="user${AT_SIGN}example.test"
+
+cleanup() {
+  for temporary_file in \
+    "$SOURCE_JSON" \
+    "$SOURCE_PROFILE" \
+    "$CREDENTIAL_SOURCE" \
+    "$UNSUPPORTED_SOURCE" \
+    "$EXACT_JSON" \
+    "$INSTALLED_JSON"; do
+    if [[ -f "$temporary_file" ]]; then
+      /bin/rm -f -- "$temporary_file" || true
+    fi
+  done
+  if [[ -d "$TEST_TMP_DIR" ]]; then
+    /bin/rmdir "$TEST_TMP_DIR" || true
+  fi
+  :
+}
+trap cleanup EXIT
+
+expect_state() {
+  local expected_state="$1"
+  local installed_json="$2"
+  local source_profile="${3:-$SOURCE_PROFILE}"
+  local actual_state
+
+  actual_state="$($STATE_SCRIPT --installed-json "$installed_json" "$source_profile")"
+  if [[ "$actual_state" != "$expected_state" ]]; then
+    echo "expected profile state '$expected_state', got '$actual_state'" >&2
+    exit 1
+  fi
+}
+
+expect_rejected() {
+  local installed_json="$1"
+  local source_profile="${2:-$SOURCE_PROFILE}"
+
+  if "$STATE_SCRIPT" --installed-json "$installed_json" "$source_profile" >/dev/null 2>&1; then
+    echo "unsupported profile data was accepted" >&2
+    exit 1
+  fi
+}
+
+umask 077
+jq -n --arg fixture_address "$FIXTURE_ADDRESS" '
+  {
+    PayloadContent: [
+      {
+        PayloadDisplayName: "Cloud restrictions",
+        PayloadIdentifier: "org.example.profile.restrictions",
+        PayloadType: "com.apple.applicationaccess",
+        PayloadUUID: "00000000-0000-4000-8000-000000000002",
+        PayloadVersion: 1,
+        allowCloudMail: false
+      },
+      {
+        EmailAccountDescription: "Example Mail",
+        EmailAccountName: "Example User",
+        EmailAccountType: "EmailTypeIMAP",
+        EmailAddress: $fixture_address,
+        IncomingMailServerAuthentication: "EmailAuthPassword",
+        IncomingMailServerHostName: "imap.example.test",
+        IncomingMailServerPortNumber: 993,
+        IncomingMailServerUseSSL: true,
+        IncomingMailServerUsername: $fixture_address,
+        OutgoingMailServerAuthentication: "EmailAuthPassword",
+        OutgoingMailServerHostName: "smtp.example.test",
+        OutgoingMailServerPortNumber: 465,
+        OutgoingMailServerUseSSL: true,
+        OutgoingMailServerUsername: $fixture_address,
+        OutgoingPasswordSameAsIncomingPassword: true,
+        PayloadDisplayName: "Example Mail",
+        PayloadIdentifier: "org.example.profile.mail",
+        PayloadType: "com.apple.mail.managed",
+        PayloadUUID: "00000000-0000-4000-8000-000000000003",
+        PayloadVersion: 1
+      }
+    ],
+    PayloadDescription: "Offline profile-state fixture",
+    PayloadDisplayName: "Example profile",
+    PayloadIdentifier: "org.example.profile",
+    PayloadOrganization: "Example",
+    PayloadRemovalDisallowed: false,
+    PayloadScope: "User",
+    PayloadType: "Configuration",
+    PayloadUUID: "00000000-0000-4000-8000-000000000001",
+    PayloadVersion: 1,
+    TargetDeviceType: 5
+  }
+' >"$SOURCE_JSON"
+plutil -convert xml1 -o "$SOURCE_PROFILE" "$SOURCE_JSON"
+
+jq -n --arg user "$PROFILE_USER" --arg fixture_address "$FIXTURE_ADDRESS" '
+  {
+    ($user): [
+      {
+        ProfileDescription: "Offline profile-state fixture",
+        ProfileDisplayName: "Example profile",
+        ProfileIdentifier: "org.example.profile",
+        ProfileInstallDate: "2026-01-01 00:00:00 +0000",
+        ProfileItems: [
+          {
+            PayloadContent: {
+              EmailAccountDescription: "Example Mail",
+              EmailAccountName: "Example User",
+              EmailAccountType: "EmailTypeIMAP",
+              EmailAddress: $fixture_address,
+              IncomingMailServerAuthentication: "EmailAuthPassword",
+              IncomingMailServerHostName: "imap.example.test",
+              IncomingMailServerPortNumber: 993,
+              IncomingMailServerUseSSL: true,
+              IncomingMailServerUsername: $fixture_address,
+              IncomingPassword: "macOS-injected-test-value",
+              OutgoingMailServerAuthentication: "EmailAuthPassword",
+              OutgoingMailServerHostName: "smtp.example.test",
+              OutgoingMailServerPortNumber: 465,
+              OutgoingMailServerUseSSL: true,
+              OutgoingMailServerUsername: $fixture_address,
+              OutgoingPasswordSameAsIncomingPassword: true
+            },
+            PayloadDisplayName: "Example Mail",
+            PayloadIdentifier: "org.example.profile.mail",
+            PayloadType: "com.apple.mail.managed",
+            PayloadUUID: "00000000-0000-4000-8000-000000000003",
+            PayloadVersion: 1
+          },
+          {
+            PayloadContent: {
+              allowCloudMail: false
+            },
+            PayloadDisplayName: "Cloud restrictions",
+            PayloadIdentifier: "org.example.profile.restrictions",
+            PayloadType: "com.apple.applicationaccess",
+            PayloadUUID: "00000000-0000-4000-8000-000000000002",
+            PayloadVersion: 1
+          }
+        ],
+        ProfileOrganization: "Example",
+        ProfileType: "Configuration",
+        ProfileUUID: "00000000-0000-4000-8000-000000000001",
+        ProfileVersion: 1
+      }
+    ]
+  }
+' >"$EXACT_JSON"
+
+jq -n --arg user "$PROFILE_USER" '{($user): []}' >"$INSTALLED_JSON"
+expect_state "missing" "$INSTALLED_JSON"
+
+# On a fresh Mac, `profiles show` emits an empty top-level object rather than
+# an object containing the requested user with an empty profile array.
+printf '{}\n' >"$INSTALLED_JSON"
+expect_state "missing" "$INSTALLED_JSON"
+
+# The empty object is the only keyless form accepted. Nonempty input must be
+# scoped exclusively to the requested user and retain the documented shape.
+jq -n '{"unexpected-user": []}' >"$INSTALLED_JSON"
+expect_rejected "$INSTALLED_JSON"
+
+jq -n --arg user "$PROFILE_USER" '{($user): [], unexpected: []}' >"$INSTALLED_JSON"
+expect_rejected "$INSTALLED_JSON"
+
+jq -n --arg user "$PROFILE_USER" '{($user): {}}' >"$INSTALLED_JSON"
+expect_rejected "$INSTALLED_JSON"
+
+jq -n --arg user "$PROFILE_USER" '{($user): ["not-a-profile"]}' >"$INSTALLED_JSON"
+expect_rejected "$INSTALLED_JSON"
+
+jq -n --arg user "$PROFILE_USER" \
+  '{($user): [{ProfileIdentifier: ""}]}' >"$INSTALLED_JSON"
+expect_rejected "$INSTALLED_JSON"
+
+printf '[]\n' >"$INSTALLED_JSON"
+expect_rejected "$INSTALLED_JSON"
+
+expect_state "exact" "$EXACT_JSON"
+
+# Install time and type-specific injected credentials do not describe source state.
+jq '
+  .[]?[0].ProfileInstallDate = "2026-02-02 00:00:00 +0000"
+  | .[]?[0].ProfileItems[]
+    |= if .PayloadType == "com.apple.mail.managed" then
+      (.PayloadContent.IncomingPassword = "different-injected-test-value")
+    else
+      .
+    end
+' "$EXACT_JSON" >"$INSTALLED_JSON"
+expect_state "exact" "$INSTALLED_JSON"
+
+# UUID equality alone is insufficient: both identity and effective settings matter.
+jq '.[]?[0].ProfileItems[0].PayloadUUID = "00000000-0000-4000-8000-000000000099"' \
+  "$EXACT_JSON" >"$INSTALLED_JSON"
+expect_state "different" "$INSTALLED_JSON"
+
+jq '
+  .[]?[0].ProfileItems[]
+    |= if .PayloadType == "com.apple.applicationaccess" then
+      (.PayloadContent.allowCloudMail = true)
+    else
+      .
+    end
+' "$EXACT_JSON" >"$INSTALLED_JSON"
+expect_state "different" "$INSTALLED_JSON"
+
+jq '
+  .[]?[0].ProfileItems[]
+    |= if .PayloadType == "com.apple.mail.managed" then
+      (.PayloadContent.IncomingMailServerHostName = "changed.example.test")
+    else
+      .
+    end
+' "$EXACT_JSON" >"$INSTALLED_JSON"
+expect_state "different" "$INSTALLED_JSON"
+
+jq '.[]?[0].ProfileDisplayName = "Changed profile"' \
+  "$EXACT_JSON" >"$INSTALLED_JSON"
+expect_state "different" "$INSTALLED_JSON"
+
+jq '
+  .[]?[0].ProfileItems[]
+    |= if .PayloadType == "com.apple.mail.managed" then
+      (.PayloadContent.UnrecognizedStatus = "not-an-ignored-field")
+    else
+      .
+    end
+' "$EXACT_JSON" >"$INSTALLED_JSON"
+expect_state "different" "$INSTALLED_JSON"
+
+# A nested payload identifier must not be mistaken for the profile identifier.
+jq -n --arg user "$PROFILE_USER" '
+  {
+    ($user): [
+      {
+        ProfileIdentifier: "org.example.unrelated",
+        ProfileItems: [
+          {
+            PayloadContent: {},
+            PayloadIdentifier: "org.example.profile",
+            PayloadType: "com.apple.applicationaccess",
+            PayloadUUID: "00000000-0000-4000-8000-000000000002",
+            PayloadVersion: 1
+          }
+        ],
+        ProfileType: "Configuration",
+        ProfileUUID: "00000000-0000-4000-8000-000000000004",
+        ProfileVersion: 1
+      }
+    ]
+  }
+' >"$INSTALLED_JSON"
+expect_state "missing" "$INSTALLED_JSON"
+
+# Credentials belong to macOS/Keychain state, never to the source profile.
+jq '
+  .PayloadContent[]
+    |= if .PayloadType == "com.apple.mail.managed" then
+      (.IncomingPassword = "source-test-value")
+    else
+      .
+    end
+' "$SOURCE_JSON" | plutil -convert xml1 -o "$CREDENTIAL_SOURCE" -- -
+expect_rejected "$EXACT_JSON" "$CREDENTIAL_SOURCE"
+
+# Policy metadata omitted by `profiles show` is accepted only at the supported value.
+jq '.TargetDeviceType = 1' "$SOURCE_JSON" \
+  | plutil -convert xml1 -o "$UNSUPPORTED_SOURCE" -- -
+expect_rejected "$EXACT_JSON" "$UNSUPPORTED_SOURCE"
+
+printf '{not-json\n' >"$INSTALLED_JSON"
+expect_rejected "$INSTALLED_JSON"
+
+echo "configuration profile state tests passed"

@@ -1,0 +1,65 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+[[ $# -eq 1 ]] || {
+  echo "usage: test-fish-path-order <generated-fish-shell-init>" >&2
+  exit 2
+}
+
+GENERATED_INIT="$1"
+[[ -f "$GENERATED_INIT" && ! -L "$GENERATED_INIT" ]] || {
+  echo "generated Fish shell initialization is missing or unsafe" >&2
+  exit 1
+}
+command -v fish >/dev/null 2>&1 || {
+  echo "fish is required for generated shell path testing" >&2
+  exit 1
+}
+
+fnm_line="$(/usr/bin/grep -nF \
+  'fnm env --use-on-cd --shell fish --version-file-strategy=recursive --resolve-engines | source' \
+  "$GENERATED_INIT" | /usr/bin/cut -d: -f1)"
+# shellcheck disable=SC2016 # Match the literal generated Fish expression.
+launcher_line="$(/usr/bin/grep -nF \
+  'fish_add_path --path --move "$HOME/.local/bin"' \
+  "$GENERATED_INIT" | /usr/bin/cut -d: -f1)"
+[[ "$fnm_line" =~ ^[0-9]+$ && "$launcher_line" =~ ^[0-9]+$ && \
+  "$launcher_line" -gt "$fnm_line" ]] || {
+  echo "generated Fish config does not restore launcher priority after fnm" >&2
+  exit 1
+}
+
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-fish-path.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+test_home="$test_root/home"
+/bin/mkdir -p \
+  "$test_home/.local/bin" \
+  "$test_home/.cargo/bin" \
+  "$test_home/bin" \
+  "$test_home/Library/pnpm/bin" \
+  "$test_home/fnm-bin"
+
+# shellcheck disable=SC2016 # Fish expands these variables in the child shell.
+HOME="$test_home" fish --no-config --private -c '
+  function fnm
+      printf "set -gx PATH %s \\$PATH\n" (string escape "$HOME/fnm-bin")
+  end
+  source "$argv[1]"
+  test "$PATH[1]" = "$HOME/.local/bin"
+  test "$PNPM_HOME" = "$HOME/Library/pnpm"
+  contains -- "$HOME/Library/pnpm/bin" $PATH
+  not contains -- "$HOME/Library/pnpm" $PATH
+' "$GENERATED_INIT" || {
+  echo "generated Fish config has incorrect launcher or pnpm path ordering" >&2
+  exit 1
+}
+
+echo "generated Fish launcher path ordering tests passed"

@@ -1,0 +1,75 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SECURE_SCRIPT="$REPO_ROOT/scripts/secure-ssh-private-state"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-ssh-state-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-ssh-state-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+ssh_dir="$test_root/home/.ssh"
+/bin/mkdir -m 700 "$test_root/home"
+"$SECURE_SCRIPT" "$ssh_dir"
+[[ "$(/usr/bin/stat -f '%Lp' "$ssh_dir")" == 700 && \
+  "$(/usr/bin/stat -f '%Lp' "$ssh_dir/config.d")" == 700 ]] || {
+  echo "SSH private-state directories were not created with mode 0700" >&2
+  exit 1
+}
+
+printf '%s\n' 'Host fixture' >"$ssh_dir/config.d/fixture"
+printf '%s\n' 'Host hidden-fixture' >"$ssh_dir/config.d/.hidden-fixture"
+/bin/chmod 0644 "$ssh_dir/config.d/fixture" "$ssh_dir/config.d/.hidden-fixture"
+/bin/chmod 0755 "$ssh_dir" "$ssh_dir/config.d"
+"$SECURE_SCRIPT" "$ssh_dir"
+for private_path in \
+  "$ssh_dir/config.d/fixture" "$ssh_dir/config.d/.hidden-fixture"; do
+  [[ "$(/usr/bin/stat -f '%Lp' "$private_path")" == 600 ]] || {
+    echo "SSH private host file was not restricted to mode 0600" >&2
+    exit 1
+  }
+done
+[[ "$(/usr/bin/stat -f '%Lp' "$ssh_dir")" == 700 && \
+  "$(/usr/bin/stat -f '%Lp' "$ssh_dir/config.d")" == 700 ]]
+
+symlink_target="$test_root/symlink-target"
+printf '%s\n' 'outside fixture' >"$symlink_target"
+/bin/chmod 0644 "$symlink_target"
+/bin/ln -s "$symlink_target" "$ssh_dir/config.d/symlink-entry"
+if "$SECURE_SCRIPT" "$ssh_dir" >/dev/null 2>&1; then
+  echo "SSH private-state hardening accepted a symlinked host entry" >&2
+  exit 1
+fi
+[[ "$(/usr/bin/stat -f '%Lp' "$symlink_target")" == 644 ]] || {
+  echo "SSH private-state hardening followed a symlink" >&2
+  exit 1
+}
+/bin/rm -f -- "$ssh_dir/config.d/symlink-entry"
+
+/bin/mkdir "$ssh_dir/config.d/nested-directory"
+if "$SECURE_SCRIPT" "$ssh_dir" >/dev/null 2>&1; then
+  echo "SSH private-state hardening accepted a non-file host entry" >&2
+  exit 1
+fi
+/bin/rmdir "$ssh_dir/config.d/nested-directory"
+
+unsafe_target="$test_root/unsafe-ssh-target"
+unsafe_link="$test_root/unsafe-ssh-link"
+/bin/mkdir -m 755 "$unsafe_target"
+/bin/ln -s "$unsafe_target" "$unsafe_link"
+if "$SECURE_SCRIPT" "$unsafe_link" >/dev/null 2>&1; then
+  echo "SSH private-state hardening accepted a symlinked SSH directory" >&2
+  exit 1
+fi
+[[ "$(/usr/bin/stat -f '%Lp' "$unsafe_target")" == 755 ]] || {
+  echo "SSH private-state hardening followed the SSH-directory symlink" >&2
+  exit 1
+}
+
+echo "SSH private-state permission tests passed"

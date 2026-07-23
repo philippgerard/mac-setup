@@ -3,7 +3,6 @@
 {
   homebrew.casks = [
     "1password"
-    "1password-cli"
     "adguard"
     "appcleaner"
     "choosy"
@@ -12,14 +11,11 @@
     "google-chrome"
     "monocle-app"
     "otty"
-    "raycast"
-    "replacicon"
     "securesafe"
     "shottr"
     "spamsieve"
     "tailscale-app"
     "updatest"
-    "whatcable"
   ];
 
   homebrew.masApps = {

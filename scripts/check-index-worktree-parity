@@ -1,0 +1,256 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-git
+source "$REPO_ROOT/scripts/trusted-git"
+
+fail_path() {
+  local reason="$1"
+  local relative_path="$2"
+
+  builtin printf '%s: ' "$reason" >&2
+  builtin printf '%q\n' "$relative_path" >&2
+  return 1
+}
+
+verify_index_entries() {
+  local head_tree="$1"
+  local empty_blob_hash="$2"
+  local ancestor_path
+  local cached_diff_status
+  local expected_mode
+  local head_entry
+  local index_hash
+  local index_mode
+  local index_stage
+  local index_type
+  local metadata
+  local metadata_extra
+  local pathspec
+  local record
+  local relative_path
+  local source_path
+  local working_hash
+  local working_permissions
+
+  while IFS= builtin read -r -d '' record; do
+    [[ "$record" == *$'\t'* ]] || {
+      echo "Git returned an invalid index-tree entry" >&2
+      return 1
+    }
+    metadata="${record%%$'\t'*}"
+    relative_path="${record#*$'\t'}"
+    index_mode=""
+    index_hash=""
+    index_stage=""
+    metadata_extra=""
+    IFS=' ' builtin read -r \
+      index_mode index_hash index_stage metadata_extra <<<"$metadata"
+    [[ "$index_mode" =~ ^(100644|100755|120000)$ && \
+      "$index_hash" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ && \
+      "$index_stage" == "0" && -z "$metadata_extra" ]] || {
+      echo "Git returned invalid or unsupported index metadata" >&2
+      return 1
+    }
+
+    case "$relative_path" in
+      ''|/*|..|../*|*/..|*/../*)
+        fail_path "Git returned an unsafe index-tree path" "$relative_path"
+        return 1
+        ;;
+    esac
+
+    # `git add -N` records an empty-blob placeholder which is intentionally
+    # absent from the staged tree. Distinguish it from a genuinely staged
+    # empty new file using only HEAD and index data; never ask Git to clean the
+    # live working file.
+    if [[ "$index_hash" == "$empty_blob_hash" ]]; then
+      pathspec=":(literal)$relative_path"
+      if ! head_entry="$(mac_setup_safe_git "$REPO_ROOT" \
+        ls-tree "$head_tree" -- "$pathspec")"; then
+        fail_path "could not inspect an indexed path in HEAD" "$relative_path"
+        return 1
+      fi
+      if [[ -z "$head_entry" ]]; then
+        cached_diff_status=0
+        mac_setup_safe_git "$REPO_ROOT" diff-index \
+          --cached \
+          --quiet \
+          --ita-invisible-in-index \
+          --no-ext-diff \
+          --no-textconv \
+          "$head_tree" -- "$pathspec" || cached_diff_status=$?
+        case "$cached_diff_status" in
+          0)
+            continue
+            ;;
+          1)
+            ;;
+          *)
+            fail_path "could not inspect an indexed path" "$relative_path"
+            return 1
+            ;;
+        esac
+      fi
+    fi
+
+    if ! index_type="$(mac_setup_safe_git "$REPO_ROOT" \
+      cat-file -t "$index_hash")"; then
+      fail_path "could not inspect an indexed object" "$relative_path"
+      return 1
+    fi
+    [[ "$index_type" == "blob" ]] || {
+      fail_path "indexed object is not a blob" "$relative_path"
+      return 1
+    }
+
+    source_path="$REPO_ROOT/$relative_path"
+    ancestor_path="$(/usr/bin/dirname "$source_path")"
+    while [[ "$ancestor_path" != "$REPO_ROOT" ]]; do
+      [[ "$ancestor_path" == "$REPO_ROOT"/* && \
+        -d "$ancestor_path" && ! -L "$ancestor_path" ]] || {
+        fail_path "indexed path has a missing, non-directory, or symlinked ancestor" \
+          "$relative_path"
+        return 1
+      }
+      ancestor_path="$(/usr/bin/dirname "$ancestor_path")"
+    done
+
+    [[ -e "$source_path" || -L "$source_path" ]] || {
+      fail_path "indexed path is missing from the working tree" "$relative_path"
+      return 1
+    }
+
+    case "$index_mode" in
+      100644|100755)
+        [[ -f "$source_path" && ! -L "$source_path" ]] || {
+          fail_path "indexed regular file has a different working-tree type" \
+            "$relative_path"
+          return 1
+        }
+        if ! working_permissions="$(/usr/bin/stat -f '%Lp' -- "$source_path")"; then
+          fail_path "could not read working-tree permissions" "$relative_path"
+          return 1
+        fi
+        [[ "$working_permissions" =~ ^[0-7]{3,4}$ ]] || {
+          fail_path "working-tree permissions have an unexpected format" \
+            "$relative_path"
+          return 1
+        }
+        if (( (8#$working_permissions & 8#100) != 0 )); then
+          expected_mode="100755"
+        else
+          expected_mode="100644"
+        fi
+        [[ "$index_mode" == "$expected_mode" ]] || {
+          fail_path "indexed executable mode differs from the working tree" \
+            "$relative_path"
+          return 1
+        }
+        if ! working_hash="$(mac_setup_safe_git "$REPO_ROOT" \
+          hash-object --no-filters -- "$relative_path")"; then
+          fail_path "could not hash a working-tree file" "$relative_path"
+          return 1
+        fi
+        ;;
+      120000)
+        [[ -L "$source_path" ]] || {
+          fail_path "indexed symlink has a different working-tree type" \
+            "$relative_path"
+          return 1
+        }
+        if ! working_hash="$(
+          /usr/bin/readlink -n -- "$source_path" |
+            mac_setup_safe_git "$REPO_ROOT" \
+              hash-object --no-filters --stdin
+        )"; then
+          fail_path "could not hash a working-tree symlink target" \
+            "$relative_path"
+          return 1
+        fi
+        ;;
+      *)
+        fail_path "unsupported indexed object type or mode" "$relative_path"
+        return 1
+        ;;
+    esac
+
+    [[ "$working_hash" == "$index_hash" ]] || {
+      fail_path "indexed bytes differ from the working tree" "$relative_path"
+      return 1
+    }
+  done
+}
+
+[[ "$(mac_setup_safe_git "$REPO_ROOT" \
+  rev-parse --is-inside-work-tree 2>/dev/null)" == "true" ]] || {
+  echo "index/worktree parity must be checked in a Git working tree" >&2
+  exit 1
+}
+
+unmerged_entries="$(mac_setup_safe_git "$REPO_ROOT" ls-files --unmerged)"
+[[ -z "$unmerged_entries" ]] || {
+  echo "refusing to validate an unmerged Git index" >&2
+  exit 1
+}
+
+if ! head_tree="$(mac_setup_safe_git "$REPO_ROOT" \
+  rev-parse --verify 'HEAD^{tree}' 2>/dev/null)"; then
+  echo "index/worktree parity requires a valid HEAD tree" >&2
+  exit 1
+fi
+[[ "$head_tree" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || {
+  echo "Git returned an invalid HEAD tree ID" >&2
+  exit 1
+}
+
+if ! empty_blob_hash="$(
+  builtin printf '' |
+    mac_setup_safe_git "$REPO_ROOT" hash-object --no-filters --stdin
+)"; then
+  echo "could not determine the repository's empty-blob ID" >&2
+  exit 1
+fi
+[[ "$empty_blob_hash" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || {
+  echo "Git returned an invalid empty-blob ID" >&2
+  exit 1
+}
+
+# Compare only HEAD and the index without materializing a tree or cleaning a
+# live file. Intent-to-add placeholders remain invisible, so ordinary unstaged
+# and intent-to-add work stays available for iterative development; the
+# independent safety scans still inspect those working-tree bytes.
+cached_diff_status=0
+mac_setup_safe_git "$REPO_ROOT" diff-index \
+  --cached \
+  --quiet \
+  --ita-invisible-in-index \
+  --no-ext-diff \
+  --no-textconv \
+  "$head_tree" -- || cached_diff_status=$?
+case "$cached_diff_status" in
+  0)
+    echo "index/worktree parity passed"
+    exit 0
+    ;;
+  1)
+    ;;
+  *)
+    echo "could not compare the real Git index to HEAD" >&2
+    exit 1
+    ;;
+esac
+
+if ! mac_setup_safe_git "$REPO_ROOT" ls-files --stage -z |
+  verify_index_entries "$head_tree" "$empty_blob_hash"; then
+  echo "index/worktree parity failed" >&2
+  exit 1
+fi
+
+echo "index/worktree parity passed"

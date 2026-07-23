@@ -20,11 +20,14 @@
   outputs = inputs@{ nixpkgs, nix-darwin, home-manager, determinate, ... }:
     let
       system = "aarch64-darwin";
+      pkgs = import nixpkgs { inherit system; };
+      # Local commands pass the ignored host config explicitly with --impure.
+      # The filtered flake source never contains .local or other ignored state;
+      # pure evaluation therefore keeps using the public generic fallback.
+      localConfigPath = builtins.getEnv "MAC_SETUP_LOCAL_CONFIG";
       localConfig =
-        if builtins.pathExists ./.local/config.json
-        then builtins.fromJSON (builtins.readFile ./.local/config.json)
-        else if builtins.pathExists ./.local/config.nix
-        then import ./.local/config.nix
+        if localConfigPath != ""
+        then builtins.fromJSON (builtins.readFile localConfigPath)
         else import ./local.example.nix;
 
       mkDarwinSystem = { host }:
@@ -58,6 +61,17 @@
       apps.${system}.darwin-rebuild = {
         type = "app";
         program = "${nix-darwin.packages.${system}.darwin-rebuild}/bin/darwin-rebuild";
+      };
+
+      devShells.${system}.validation = pkgs.mkShell {
+        packages = with pkgs; [
+          coreutils
+          fish
+          gitleaks
+          jq
+          ripgrep
+          shellcheck
+        ];
       };
     };
 }

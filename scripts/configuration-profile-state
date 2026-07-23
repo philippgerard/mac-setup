@@ -1,0 +1,338 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$SCRIPT_DIR/trusted-path"
+mac_setup_harden_environment
+
+INSTALLED_JSON=""
+PROFILE_FILE=""
+PROFILE_USER="$(/usr/bin/id -un)"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/configuration-profile-state [--installed-json <path>] <profile.mobileconfig>
+
+Print exactly one state for the current user: missing, exact, or different.
+The optional installed JSON input exists for offline validation and tests.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --installed-json)
+      [[ $# -ge 2 ]] || { echo "missing value for --installed-json" >&2; exit 2; }
+      INSTALLED_JSON="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      [[ -z "$PROFILE_FILE" ]] || {
+        echo "only one configuration profile can be checked at a time" >&2
+        exit 2
+      }
+      PROFILE_FILE="$1"
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$PROFILE_FILE" ]] || {
+  usage >&2
+  exit 2
+}
+
+for command_name in jq mktemp plutil; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+[[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" && -O "$PROFILE_FILE" ]] || {
+  echo "configuration profile must be a user-owned regular file, not a symlink" >&2
+  exit 1
+}
+plutil -lint "$PROFILE_FILE" >/dev/null
+
+if [[ -n "$INSTALLED_JSON" ]]; then
+  [[ -f "$INSTALLED_JSON" && ! -L "$INSTALLED_JSON" && -O "$INSTALLED_JSON" ]] || {
+    echo "installed-profile JSON must be a user-owned regular file, not a symlink" >&2
+    exit 1
+  }
+fi
+
+STATE_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-profile-state.XXXXXX")"
+chmod 700 "$STATE_TMP_DIR"
+SOURCE_JSON="$STATE_TMP_DIR/source.json"
+INSTALLED_PLIST="$STATE_TMP_DIR/installed.plist"
+GENERATED_INSTALLED_JSON="$STATE_TMP_DIR/installed.json"
+
+cleanup() {
+  if [[ -f "$SOURCE_JSON" ]]; then
+    /bin/rm -f -- "$SOURCE_JSON" || true
+  fi
+  if [[ -f "$INSTALLED_PLIST" ]]; then
+    /bin/rm -f -- "$INSTALLED_PLIST" || true
+  fi
+  if [[ -f "$GENERATED_INSTALLED_JSON" ]]; then
+    /bin/rm -f -- "$GENERATED_INSTALLED_JSON" || true
+  fi
+  if [[ -d "$STATE_TMP_DIR" ]]; then
+    /bin/rmdir "$STATE_TMP_DIR" || true
+  fi
+  :
+}
+trap cleanup EXIT
+
+umask 077
+plutil -convert json -o "$SOURCE_JSON" "$PROFILE_FILE"
+chmod 600 "$SOURCE_JSON"
+
+if [[ -z "$INSTALLED_JSON" ]]; then
+  /usr/bin/profiles show \
+    -type configuration \
+    -user "$PROFILE_USER" \
+    -output "$INSTALLED_PLIST" \
+    >/dev/null 2>&1 || {
+      echo "could not query installed configuration profiles" >&2
+      exit 1
+    }
+  chmod 600 "$INSTALLED_PLIST"
+  plutil -convert json -o "$GENERATED_INSTALLED_JSON" "$INSTALLED_PLIST" || {
+    echo "could not parse installed configuration profiles" >&2
+      exit 1
+    }
+  chmod 600 "$GENERATED_INSTALLED_JSON"
+  INSTALLED_JSON="$GENERATED_INSTALLED_JSON"
+fi
+
+# This checker is intentionally limited to user-scoped profiles whose policy
+# metadata can be verified from `profiles show`. Source profiles must never
+# contain account passwords; macOS adds those after interactive approval.
+jq -e '
+  def has_no_source_credentials:
+    if .PayloadType == "com.apple.mail.managed" then
+      ((has("IncomingPassword") or has("OutgoingPassword")) | not)
+    elif .PayloadType == "com.apple.caldav.account" then
+      (has("CalDAVPassword") | not)
+    elif .PayloadType == "com.apple.carddav.account" then
+      (has("CardDAVPassword") | not)
+    elif .PayloadType == "com.apple.ews.account" then
+      (has("Password") | not)
+    else
+      true
+    end;
+
+  type == "object"
+  and ((keys - [
+    "PayloadContent",
+    "PayloadDescription",
+    "PayloadDisplayName",
+    "PayloadIdentifier",
+    "PayloadOrganization",
+    "PayloadRemovalDisallowed",
+    "PayloadScope",
+    "PayloadType",
+    "PayloadUUID",
+    "PayloadVersion",
+    "TargetDeviceType"
+  ]) | length == 0)
+  and (.PayloadType == "Configuration")
+  and (.PayloadIdentifier | type == "string" and length > 0)
+  and (.PayloadUUID | type == "string" and length > 0)
+  and (.PayloadVersion | type == "number")
+  and (.PayloadVersion >= 1)
+  and ((.PayloadVersion | floor) == .PayloadVersion)
+  and (.PayloadScope == "User")
+  and ((has("PayloadDescription") | not) or (.PayloadDescription | type == "string"))
+  and ((has("PayloadDisplayName") | not) or (.PayloadDisplayName | type == "string"))
+  and ((has("PayloadOrganization") | not) or (.PayloadOrganization | type == "string"))
+  and ((has("PayloadRemovalDisallowed") | not) or (.PayloadRemovalDisallowed == false))
+  and ((has("TargetDeviceType") | not) or (.TargetDeviceType == 5))
+  and (.PayloadContent | type == "array" and length > 0)
+  and (([.PayloadContent[].PayloadIdentifier] | unique | length) == (.PayloadContent | length))
+  and (([.PayloadContent[].PayloadUUID] | unique | length) == (.PayloadContent | length))
+  and all(.PayloadContent[];
+    (type == "object")
+    and (.PayloadIdentifier | type == "string" and length > 0)
+    and (.PayloadUUID | type == "string" and length > 0)
+    and (.PayloadType | type == "string" and length > 0)
+    and (.PayloadVersion | type == "number")
+    and (.PayloadVersion >= 1)
+    and ((.PayloadVersion | floor) == .PayloadVersion)
+    and ((has("PayloadDescription") | not) or (.PayloadDescription | type == "string"))
+    and ((has("PayloadDisplayName") | not) or (.PayloadDisplayName | type == "string"))
+    and ((has("PayloadOrganization") | not) or (.PayloadOrganization | type == "string"))
+    and has_no_source_credentials
+  )
+' "$SOURCE_JSON" >/dev/null || {
+  echo "source configuration profile has an unsupported structure" >&2
+  exit 1
+}
+
+jq -e --arg user "$PROFILE_USER" '
+  type == "object"
+  and (
+    length == 0
+    or (
+      keys == [$user]
+      and (.[$user] | type == "array")
+      and all(.[$user][];
+        type == "object"
+        and (.ProfileIdentifier | type == "string" and length > 0)
+      )
+    )
+  )
+' "$INSTALLED_JSON" >/dev/null || {
+  echo "installed configuration profile data has an unsupported structure" >&2
+  exit 1
+}
+
+jq -er \
+  --arg user "$PROFILE_USER" \
+  --slurpfile source "$SOURCE_JSON" '
+    # `profiles show` renames top-level profile metadata and moves each
+    # effective payload settings into ProfileItems[].PayloadContent.
+    def payload_metadata_keys:
+      [
+        "PayloadDescription",
+        "PayloadDisplayName",
+        "PayloadIdentifier",
+        "PayloadOrganization",
+        "PayloadType",
+        "PayloadUUID",
+        "PayloadVersion"
+      ];
+
+    def installed_profile_supported:
+      type == "object"
+      and ((keys - [
+        "ProfileDescription",
+        "ProfileDisplayName",
+        "ProfileIdentifier",
+        "ProfileInstallDate",
+        "ProfileItems",
+        "ProfileOrganization",
+        "ProfileRemovalDisallowed",
+        "ProfileType",
+        "ProfileUUID",
+        "ProfileVersion"
+      ]) | length == 0)
+      and (.ProfileIdentifier | type == "string" and length > 0)
+      and (.ProfileUUID | type == "string" and length > 0)
+      and (.ProfileType == "Configuration")
+      and (.ProfileVersion | type == "number")
+      and (.ProfileVersion >= 1)
+      and ((.ProfileVersion | floor) == .ProfileVersion)
+      and ((has("ProfileDescription") | not) or (.ProfileDescription | type == "string"))
+      and ((has("ProfileDisplayName") | not) or (.ProfileDisplayName | type == "string"))
+      and ((has("ProfileOrganization") | not) or (.ProfileOrganization | type == "string"))
+      and ((has("ProfileRemovalDisallowed") | not) or (.ProfileRemovalDisallowed | type == "boolean"))
+      and ((has("ProfileInstallDate") | not) or (.ProfileInstallDate | type == "string"))
+      and (.ProfileItems | type == "array" and length > 0)
+      and (([.ProfileItems[].PayloadIdentifier] | unique | length) == (.ProfileItems | length))
+      and (([.ProfileItems[].PayloadUUID] | unique | length) == (.ProfileItems | length))
+      and all(.ProfileItems[];
+        (type == "object")
+        and ((keys - [
+          "PayloadContent",
+          "PayloadDescription",
+          "PayloadDisplayName",
+          "PayloadIdentifier",
+          "PayloadOrganization",
+          "PayloadType",
+          "PayloadUUID",
+          "PayloadVersion"
+        ]) | length == 0)
+        and (.PayloadIdentifier | type == "string" and length > 0)
+        and (.PayloadUUID | type == "string" and length > 0)
+        and (.PayloadType | type == "string" and length > 0)
+        and (.PayloadVersion | type == "number")
+        and (.PayloadVersion >= 1)
+        and ((.PayloadVersion | floor) == .PayloadVersion)
+        and ((has("PayloadDescription") | not) or (.PayloadDescription | type == "string"))
+        and ((has("PayloadDisplayName") | not) or (.PayloadDisplayName | type == "string"))
+        and ((has("PayloadOrganization") | not) or (.PayloadOrganization | type == "string"))
+        and (.PayloadContent | type == "object")
+        and (((.PayloadContent | keys) - payload_metadata_keys) == (.PayloadContent | keys))
+      );
+
+    def without_injected_credentials($payload_type):
+      if $payload_type == "com.apple.mail.managed" then
+        del(.IncomingPassword, .OutgoingPassword)
+      elif $payload_type == "com.apple.caldav.account" then
+        del(.CalDAVPassword)
+      elif $payload_type == "com.apple.carddav.account" then
+        del(.CardDAVPassword)
+      elif $payload_type == "com.apple.ews.account" then
+        del(.Password)
+      else
+        .
+      end;
+
+    def sorted_payloads:
+      sort_by(.PayloadIdentifier, .PayloadUUID);
+
+    def source_canonical:
+      {
+        PayloadContent: (.PayloadContent | sorted_payloads),
+        PayloadDescription,
+        PayloadDisplayName,
+        PayloadIdentifier,
+        PayloadOrganization,
+        PayloadRemovalDisallowed: (.PayloadRemovalDisallowed // false),
+        PayloadScope,
+        PayloadType,
+        PayloadUUID,
+        PayloadVersion
+      }
+      | with_entries(select(.value != null));
+
+    def installed_item_canonical:
+      . as $item
+      | ($item.PayloadContent | without_injected_credentials($item.PayloadType)) as $content
+      | (($item | del(.PayloadContent)) + $content);
+
+    def installed_canonical:
+      {
+        PayloadContent: ([.ProfileItems[] | installed_item_canonical] | sorted_payloads),
+        PayloadDescription: .ProfileDescription,
+        PayloadDisplayName: .ProfileDisplayName,
+        PayloadIdentifier: .ProfileIdentifier,
+        PayloadOrganization: .ProfileOrganization,
+        PayloadRemovalDisallowed: (.ProfileRemovalDisallowed // false),
+        PayloadScope: "User",
+        PayloadType: .ProfileType,
+        PayloadUUID: .ProfileUUID,
+        PayloadVersion: .ProfileVersion
+      }
+      | with_entries(select(.value != null));
+
+    ($source[0]) as $source_profile |
+    [
+      (.[$user] // [])[]
+      | select(.ProfileIdentifier == $source_profile.PayloadIdentifier)
+    ] as $matches |
+    if ($matches | length) == 0 then
+      "missing"
+    elif ($matches | length) != 1 then
+      error("configuration profile identifier is installed more than once")
+    elif ($matches[0] | installed_profile_supported | not) then
+      error("installed configuration profile has an unsupported structure")
+    elif ($matches[0] | installed_canonical) == ($source_profile | source_canonical) then
+      "exact"
+    else
+      "different"
+    end
+  ' "$INSTALLED_JSON"

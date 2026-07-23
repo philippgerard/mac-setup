@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Prefer root-owned activated profiles, then retain verified immutable Nix-store
+# directories as a fresh validation-shell fallback before macOS system tools.
+# User-writable profiles, Homebrew, and other inherited paths are omitted.
+mac_setup_trusted_path() {
+  local local_user
+  local inherited_path="${PATH:-}"
+  local trusted_nix_path=""
+  local path_entry
+  local path_owner
+  local path_mode
+  local -a path_entries
+  local IFS=:
+
+  path_entries=()
+  local_user="$(/usr/bin/id -un)"
+  read -r -a path_entries <<<"$inherited_path" || true
+  for path_entry in "${path_entries[@]}"; do
+    [[ "$path_entry" =~ ^/nix/store/[0-9a-z]{32}-[^/]+/bin$ ]] || continue
+    [[ -d "$path_entry" && ! -L "$path_entry" ]] || continue
+    path_owner="$(/usr/bin/stat -Lf '%Su' "$path_entry")"
+    path_mode="$(/usr/bin/stat -Lf '%Lp' "$path_entry")"
+    [[ "$path_owner" == "root" && "$path_mode" =~ ^[0-7]{3,4}$ ]] || continue
+    (( (8#$path_mode & 8#22) == 0 )) || continue
+    case ":$trusted_nix_path:" in
+      *":$path_entry:"*) ;;
+      *) trusted_nix_path="${trusted_nix_path:+$trusted_nix_path:}$path_entry" ;;
+    esac
+  done
+
+  builtin printf '%s\n' \
+    "/etc/profiles/per-user/$local_user/bin:/run/current-system/sw/bin${trusted_nix_path:+:$trusted_nix_path}:/usr/bin:/bin:/usr/sbin:/sbin"
+}
+
+mac_setup_harden_environment() {
+  builtin local environment_entry
+  builtin local function_name
+
+  # Protected Bash ignores exported functions but leaves their raw environment
+  # entries available to unprotected descendants. Reject them before any
+  # private helper spawns another shell or script.
+  while IFS= builtin read -r environment_entry; do
+    case "$environment_entry" in
+      BASH_FUNC_*%%=*)
+        builtin printf '%s\n' \
+          'refusing an environment containing exported Bash functions' >&2
+        return 1
+        ;;
+    esac
+  done < <(/usr/bin/env)
+  builtin unset BASH_ENV ENV CDPATH GLOBIGNORE || true
+
+  # Exported Bash functions take precedence over PATH lookups. Private restore
+  # helpers define no functions before calling this, so retain only this
+  # source-controlled pair and discard every inherited function.
+  while IFS= builtin read -r function_name; do
+    case "$function_name" in
+      mac_setup_harden_environment | mac_setup_trusted_path) ;;
+      *) builtin unset -f "$function_name" ;;
+    esac
+  done < <(builtin compgen -A function)
+
+  PATH="$(mac_setup_trusted_path)"
+  builtin export PATH
+}

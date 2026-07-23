@@ -1,0 +1,346 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/private-state-paths
+source "$REPO_ROOT/scripts/private-state-paths"
+CONFIG_FILE="${1:-${MAC_SETUP_MAIL_CONFIG_FILE:-$MAC_SETUP_MAIL_CONFIG_FILE_DEFAULT}}"
+PROFILE_DIR="${2:-${MAC_SETUP_MAIL_PROFILE_DIR:-$MAC_SETUP_MAIL_PROFILE_DIR_DEFAULT}}"
+CONFIG_FILE="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$CONFIG_FILE" "Mail account config")"
+PROFILE_DIR="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$PROFILE_DIR" "Mail profile directory")"
+PROFILE_PARENT="$(/usr/bin/dirname "$PROFILE_DIR")"
+MARKER_FILE="$PROFILE_DIR/.mac-setup-generated"
+MANIFEST_FILE="$PROFILE_DIR/.generated-profile-ids"
+PENDING_MANIFEST_FILE="$PROFILE_DIR/.generated-profile-ids.pending"
+MARKER_CONTENT="mac-setup-mail-account-profiles-v1"
+PROFILE_DIR_INITIALIZED=0
+
+for command_name in jq mktemp plutil; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+"$REPO_ROOT/scripts/validate-mail-accounts-config" "$CONFIG_FILE" >/dev/null
+
+[[ ! -L "$PROFILE_DIR" ]] || {
+  echo "refusing to replace a symlinked Mail profile directory" >&2
+  exit 1
+}
+[[ ! -e "$PROFILE_DIR" || -d "$PROFILE_DIR" ]] || {
+  echo "Mail profile output path is not a directory" >&2
+  exit 1
+}
+[[ ! -d "$PROFILE_DIR" || -O "$PROFILE_DIR" ]] || {
+  echo "Mail profile output directory is not owned by the current user" >&2
+  exit 1
+}
+[[ ! -d "$PROFILE_DIR" || "$(/usr/bin/stat -f '%Lp' "$PROFILE_DIR")" == "700" ]] || {
+  echo "Mail profile output directory must have mode 0700" >&2
+  exit 1
+}
+
+if [[ -e "$PROFILE_PARENT" || -L "$PROFILE_PARENT" ]]; then
+  [[ -d "$PROFILE_PARENT" && ! -L "$PROFILE_PARENT" && -O "$PROFILE_PARENT" ]] || {
+    echo "Mail profile parent directory is unsafe" >&2
+    exit 1
+  }
+  [[ "$(/usr/bin/stat -f '%Lp' "$PROFILE_PARENT")" == "700" ]] || {
+    echo "Mail profile parent directory must have mode 0700" >&2
+    exit 1
+  }
+else
+  profile_grandparent="$(/usr/bin/dirname "$PROFILE_PARENT")"
+  [[ -d "$profile_grandparent" && ! -L "$profile_grandparent" && -O "$profile_grandparent" ]] || {
+    echo "Mail profile parent directory is unsafe or missing" >&2
+    exit 1
+  }
+  /bin/mkdir -m 700 -- "$PROFILE_PARENT"
+fi
+
+if [[ -d "$PROFILE_DIR" ]]; then
+  [[ ! -L "$MARKER_FILE" && ! -L "$MANIFEST_FILE" && \
+    ! -L "$PENDING_MANIFEST_FILE" ]] || {
+    echo "refusing to use symlinked Mail profile generator metadata" >&2
+    exit 1
+  }
+  if [[ -f "$MARKER_FILE" ]]; then
+    PROFILE_DIR_INITIALIZED=1
+    [[ -O "$MARKER_FILE" && "$(/usr/bin/stat -f '%Lp' "$MARKER_FILE")" == "600" ]] || {
+      echo "Mail profile ownership marker has unsafe ownership or permissions" >&2
+      exit 1
+    }
+    [[ "$(<"$MARKER_FILE")" == "$MARKER_CONTENT" ]] || {
+      echo "Mail profile output directory has an unrecognized ownership marker" >&2
+      exit 1
+    }
+    [[ -f "$MANIFEST_FILE" ]] || {
+      echo "Mail profile output directory is missing its generated-file manifest" >&2
+      exit 1
+    }
+    [[ -O "$MANIFEST_FILE" && "$(/usr/bin/stat -f '%Lp' "$MANIFEST_FILE")" == "600" ]] || {
+      echo "Mail profile manifest has unsafe ownership or permissions" >&2
+      exit 1
+    }
+    if [[ -e "$PENDING_MANIFEST_FILE" || -L "$PENDING_MANIFEST_FILE" ]]; then
+      [[ -f "$PENDING_MANIFEST_FILE" && ! -L "$PENDING_MANIFEST_FILE" && \
+        -O "$PENDING_MANIFEST_FILE" && \
+        "$(/usr/bin/stat -f '%Lp' "$PENDING_MANIFEST_FILE")" == "600" ]] || {
+        echo "pending Mail profile manifest has unsafe ownership or permissions" >&2
+        exit 1
+      }
+    fi
+  elif find "$PROFILE_DIR" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    echo "refusing to use a nonempty Mail profile directory not created by this generator" >&2
+    exit 1
+  fi
+fi
+
+staging_dir="$(mktemp -d "$PROFILE_PARENT/.mail-profiles.XXXXXX")"
+cleanup() {
+  if [[ -n "${staging_dir:-}" ]]; then
+    /bin/rm -rf -- "$staging_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+jq -r '.accounts[] | select(.type == "imap") | .id' \
+  "$CONFIG_FILE" >"$staging_dir/.generated-profile-ids"
+
+manifest_contains_id() {
+  local wanted_id="$1"
+  local manifest_path="$2"
+  local listed_id
+
+  [[ -f "$manifest_path" ]] || return 1
+  while IFS= read -r listed_id; do
+    [[ "$listed_id" == "$wanted_id" ]] && return 0
+  done <"$manifest_path"
+  return 1
+}
+
+generator_tracks_id() {
+  local wanted_id="$1"
+
+  manifest_contains_id "$wanted_id" "$MANIFEST_FILE" ||
+    manifest_contains_id "$wanted_id" "$PENDING_MANIFEST_FILE"
+}
+
+validate_manifest_ids() {
+  local manifest_path="$1"
+  local listed_id
+
+  while IFS= read -r listed_id; do
+    [[ "$listed_id" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || {
+      echo "Mail profile manifest contains an unsafe account ID" >&2
+      exit 1
+    }
+  done <"$manifest_path"
+}
+
+validate_manifest_ids "$staging_dir/.generated-profile-ids"
+if [[ "$PROFILE_DIR_INITIALIZED" -eq 1 ]]; then
+  validate_manifest_ids "$MANIFEST_FILE"
+  if [[ -f "$PENDING_MANIFEST_FILE" ]]; then
+    validate_manifest_ids "$PENDING_MANIFEST_FILE"
+  fi
+fi
+
+while IFS= read -r account_id; do
+  [[ "$account_id" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || {
+    echo "validated Mail account ID became unsafe" >&2
+    exit 1
+  }
+
+  profile_file="$staging_dir/$account_id.mobileconfig"
+  jq -n --slurpfile config "$CONFIG_FILE" --arg account_id "$account_id" '
+    $config[0] as $config |
+    ($config.accounts[] | select(.id == $account_id)) as $account |
+    {
+      PayloadContent: ([
+        {
+          PayloadDisplayName: $account.description,
+          PayloadIdentifier: $account.payload.identifier,
+          PayloadType: "com.apple.mail.managed",
+          PayloadUUID: $account.payload.uuid,
+          PayloadVersion: 1,
+          EmailAccountDescription: $account.description,
+          EmailAccountName: $account.display_name,
+          EmailAccountType: "EmailTypeIMAP",
+          EmailAddress: $account.email_address,
+          IncomingMailServerAuthentication: "EmailAuthPassword",
+          IncomingMailServerHostName: $account.incoming.hostname,
+          IncomingMailServerPortNumber: $account.incoming.port,
+          IncomingMailServerUseSSL: $account.incoming.use_ssl,
+          IncomingMailServerUsername: $account.incoming.username,
+          OutgoingMailServerAuthentication: "EmailAuthPassword",
+          OutgoingMailServerHostName: $account.outgoing.hostname,
+          OutgoingMailServerPortNumber: $account.outgoing.port,
+          OutgoingMailServerUseSSL: $account.outgoing.use_ssl,
+          OutgoingMailServerUsername: $account.outgoing.username,
+          OutgoingPasswordSameAsIncomingPassword: $account.password_same_as_incoming
+        }
+      ] +
+      (if ($account | has("services")) then
+        [
+          {
+            PayloadDisplayName: $account.services.caldav.description,
+            PayloadIdentifier: $account.services.caldav.payload.identifier,
+            PayloadType: "com.apple.caldav.account",
+            PayloadUUID: $account.services.caldav.payload.uuid,
+            PayloadVersion: 1,
+            CalDAVAccountDescription: $account.services.caldav.description,
+            CalDAVHostName: $account.services.caldav.hostname,
+            CalDAVPort: $account.services.caldav.port,
+            CalDAVUseSSL: $account.services.caldav.use_ssl,
+            CalDAVUsername: $account.services.caldav.username
+          },
+          {
+            PayloadDisplayName: $account.services.carddav.description,
+            PayloadIdentifier: $account.services.carddav.payload.identifier,
+            PayloadType: "com.apple.carddav.account",
+            PayloadUUID: $account.services.carddav.payload.uuid,
+            PayloadVersion: 1,
+            CardDAVAccountDescription: $account.services.carddav.description,
+            CardDAVHostName: $account.services.carddav.hostname,
+            CardDAVPort: $account.services.carddav.port,
+            CardDAVUseSSL: $account.services.carddav.use_ssl,
+            CardDAVUsername: $account.services.carddav.username
+          }
+        ]
+      else
+        []
+      end)),
+      PayloadDescription: (
+        if ($account | has("services")) then
+          "Configures password-free Mail, CalDAV, and CardDAV accounts. Removing this profile also removes those managed accounts."
+        else
+          "Configures one password-free Mail account. Removing this profile also removes that account."
+        end
+      ),
+      PayloadDisplayName: $account.profile.display_name,
+      PayloadIdentifier: $account.profile.identifier,
+      PayloadScope: "User",
+      PayloadType: "Configuration",
+      PayloadUUID: $account.profile.uuid,
+      PayloadVersion: 1,
+      TargetDeviceType: 5
+    }
+  ' | plutil -convert xml1 -o "$profile_file" -- -
+
+  plutil -lint "$profile_file" >/dev/null
+  chmod 600 "$profile_file"
+done <"$staging_dir/.generated-profile-ids"
+
+tracked_manifests=()
+if [[ "$PROFILE_DIR_INITIALIZED" -eq 1 ]]; then
+  tracked_manifests+=("$MANIFEST_FILE")
+  if [[ -f "$PENDING_MANIFEST_FILE" ]]; then
+    /bin/cp "$PENDING_MANIFEST_FILE" \
+      "$staging_dir/.previous-pending-profile-ids"
+    chmod 600 "$staging_dir/.previous-pending-profile-ids"
+    tracked_manifests+=("$staging_dir/.previous-pending-profile-ids")
+  fi
+fi
+
+if [[ "${#tracked_manifests[@]}" -gt 0 ]]; then
+  for tracked_manifest in "${tracked_manifests[@]}"; do
+    while IFS= read -r old_id; do
+      old_profile="$PROFILE_DIR/$old_id.mobileconfig"
+      [[ ! -L "$old_profile" ]] || {
+        echo "refusing to replace a symlink listed as a generated Mail profile" >&2
+        exit 1
+      }
+      [[ ! -e "$old_profile" || -f "$old_profile" ]] || {
+        echo "refusing to replace a non-file listed as a generated Mail profile" >&2
+        exit 1
+      }
+      [[ ! -e "$old_profile" || ( -O "$old_profile" && "$(/usr/bin/stat -f '%Lp' "$old_profile")" == "600" ) ]] || {
+        echo "generated Mail profile has unsafe ownership or permissions" >&2
+        exit 1
+      }
+    done <"$tracked_manifest"
+  done
+fi
+
+while IFS= read -r account_id; do
+  destination="$PROFILE_DIR/$account_id.mobileconfig"
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    [[ -f "$destination" && ! -L "$destination" ]] || {
+      echo "refusing to replace an unsafe Mail profile destination" >&2
+      exit 1
+    }
+    [[ -O "$destination" && "$(/usr/bin/stat -f '%Lp' "$destination")" == "600" ]] || {
+      echo "refusing to replace a Mail profile with unsafe ownership or permissions" >&2
+      exit 1
+    }
+    generator_tracks_id "$account_id" || {
+      echo "refusing to overwrite a Mail profile not tracked by the generator" >&2
+      exit 1
+    }
+  fi
+done <"$staging_dir/.generated-profile-ids"
+
+if [[ "$PROFILE_DIR_INITIALIZED" -eq 0 ]]; then
+  printf '%s\n' "$MARKER_CONTENT" >"$staging_dir/.mac-setup-generated"
+  chmod 600 "$staging_dir/.mac-setup-generated" \
+    "$staging_dir/.generated-profile-ids"
+  if [[ -d "$PROFILE_DIR" ]]; then
+    /bin/rmdir "$PROFILE_DIR"
+  fi
+  /bin/mv "$staging_dir" "$PROFILE_DIR"
+  staging_dir=""
+else
+  # Persist the union of every previously owned ID and the new desired set
+  # before changing profiles. Even two consecutive interruptions cannot orphan
+  # a generated file by dropping its ownership record too early.
+  {
+    for tracked_manifest in "${tracked_manifests[@]}"; do
+      /bin/cat "$tracked_manifest"
+    done
+    /bin/cat "$staging_dir/.generated-profile-ids"
+  } | /usr/bin/awk 'NF && !seen[$0]++' \
+    >"$staging_dir/.generated-profile-ids.pending"
+  chmod 600 "$staging_dir/.generated-profile-ids.pending"
+  /bin/mv "$staging_dir/.generated-profile-ids.pending" \
+    "$PENDING_MANIFEST_FILE"
+
+  # Test-only crash point: a deliberate stop here leaves the same durable
+  # ownership union that an external interruption would leave.
+  if [[ "${MAC_SETUP_TEST_STOP_AFTER_PROFILE_PENDING:-0}" == "1" ]]; then
+    exit 75
+  fi
+
+  while IFS= read -r account_id; do
+    /bin/mv "$staging_dir/$account_id.mobileconfig" \
+      "$PROFILE_DIR/$account_id.mobileconfig"
+  done <"$staging_dir/.generated-profile-ids"
+
+  for tracked_manifest in "${tracked_manifests[@]}"; do
+    while IFS= read -r old_id; do
+      if ! grep -Fxq -- "$old_id" "$staging_dir/.generated-profile-ids"; then
+        /bin/rm -f -- "$PROFILE_DIR/$old_id.mobileconfig"
+      fi
+    done <"$tracked_manifest"
+  done
+
+  # A same-filesystem rename publishes the completed manifest atomically.
+  /bin/mv "$staging_dir/.generated-profile-ids" "$MANIFEST_FILE"
+  /bin/rm -f -- "$PENDING_MANIFEST_FILE"
+fi
+
+profile_count="$(jq '[.accounts[] | select(.type == "imap")] | length' "$CONFIG_FILE")"
+exchange_count="$(jq '[.accounts[] | select(.type == "exchange_oauth")] | length' "$CONFIG_FILE")"
+echo "$profile_count separate password-free IMAP/DAV profiles were generated with private permissions."
+if [[ "$exchange_count" -gt 0 ]]; then
+  echo "$exchange_count Microsoft Exchange accounts will use guided native OAuth; no Exchange profile was generated."
+fi
+echo "Install only the IMAP/DAV profiles wanted on this Mac."

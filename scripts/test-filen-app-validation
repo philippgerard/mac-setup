@@ -1,0 +1,57 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VALIDATOR="$REPO_ROOT/scripts/validate-filen-app-copy"
+FILEN_MODULE="$REPO_ROOT/modules/home/filen-menubar.nix"
+test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-filen-app-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_dir:-}" && -d "$test_dir" && ! -L "$test_dir" ]]; then
+    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+/usr/bin/grep -Fq -- "--data-dir \"\$HOME/Library/Application Support/filen-cli\"" \
+  "$FILEN_MODULE" || {
+  echo "Filen launcher does not force the protected macOS state directory" >&2
+  exit 1
+}
+
+expected_app="$test_dir/expected/Filen Menubar.app"
+copied_app="$test_dir/copied/Filen Menubar.app"
+/bin/mkdir -p "$expected_app/Contents/MacOS" "$test_dir/copied"
+/usr/bin/plutil -create xml1 "$expected_app/Contents/Info.plist"
+/usr/bin/plutil -insert CFBundleIdentifier -string org.example.filen-menubar-test \
+  "$expected_app/Contents/Info.plist"
+/usr/bin/plutil -insert CFBundleExecutable -string filen-menubar \
+  "$expected_app/Contents/Info.plist"
+/usr/bin/plutil -insert CFBundleVersion -string 1 \
+  "$expected_app/Contents/Info.plist"
+/usr/bin/plutil -insert CFBundlePackageType -string APPL \
+  "$expected_app/Contents/Info.plist"
+printf '#!/bin/sh\nexit 0\n' >"$expected_app/Contents/MacOS/filen-menubar"
+/bin/chmod 755 "$expected_app/Contents/MacOS/filen-menubar"
+/usr/bin/codesign --force --sign - "$expected_app" >/dev/null 2>&1
+/bin/cp -R "$expected_app" "$copied_app"
+
+"$VALIDATOR" "$expected_app" "$copied_app"
+
+/bin/mv "$copied_app" "$test_dir/copied/real-app"
+/bin/ln -s "$test_dir/copied/real-app" "$copied_app"
+if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
+  echo "Filen app validation accepted a symlinked copied bundle" >&2
+  exit 1
+fi
+/bin/unlink "$copied_app"
+/bin/mv "$test_dir/copied/real-app" "$copied_app"
+
+printf '# altered\n' >>"$copied_app/Contents/MacOS/filen-menubar"
+if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
+  echo "Filen app validation accepted an altered executable" >&2
+  exit 1
+fi
+
+echo "Filen Menubar application validation tests passed"

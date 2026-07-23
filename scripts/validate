@@ -1,32 +1,95 @@
-#!/bin/bash
+#!/bin/bash -p
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+
+missing_validation_tools=()
+for command_name in fish gitleaks jq plutil rg shellcheck; do
+  command -v "$command_name" >/dev/null 2>&1 || \
+    missing_validation_tools+=("$command_name")
+done
+if [[ "${#missing_validation_tools[@]}" -gt 0 ]]; then
+  [[ "${MAC_SETUP_VALIDATION_SHELL:-0}" != "1" ]] || {
+    echo "required validation tools remain unavailable in the pinned shell: ${missing_validation_tools[*]}" >&2
+    exit 1
+  }
+  exec "$REPO_ROOT/scripts/run-with-validation-tools" \
+    /usr/bin/env MAC_SETUP_VALIDATION_SHELL=1 "$REPO_ROOT/scripts/validate"
+fi
 
 for script in setup.sh scripts/*; do
   [[ -f "$script" ]] || continue
   bash -n "$script"
 done
 
-if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck setup.sh scripts/*
-fi
+shellcheck setup.sh scripts/*
 
+bash "$REPO_ROOT/scripts/check-index-worktree-parity"
 bash "$REPO_ROOT/scripts/check-public-safety"
+bash "$REPO_ROOT/scripts/check-history-safety" HEAD
+bash "$REPO_ROOT/scripts/test-1password-document-lookup"
+bash "$REPO_ROOT/scripts/test-1password-environment"
+bash "$REPO_ROOT/scripts/test-app-inventory"
+bash "$REPO_ROOT/scripts/test-bootstrap-checkout"
+bash "$REPO_ROOT/scripts/test-configuration-profile-state"
+bash "$REPO_ROOT/scripts/test-filen-app-validation"
+bash "$REPO_ROOT/scripts/test-finish-setup"
+bash "$REPO_ROOT/scripts/test-flake-source-privacy"
+bash "$REPO_ROOT/scripts/test-gpg-backup-verification"
+bash "$REPO_ROOT/scripts/test-git-identity-policy"
+bash "$REPO_ROOT/scripts/test-history-safety"
+bash "$REPO_ROOT/scripts/test-icloud-service-restrictions-profile"
+bash "$REPO_ROOT/scripts/test-index-worktree-parity"
+bash "$REPO_ROOT/scripts/test-local-config"
+bash "$REPO_ROOT/scripts/test-mail-account-profiles"
+bash "$REPO_ROOT/scripts/test-microsoft-native-passkey-readiness"
+bash "$REPO_ROOT/scripts/test-otty-config"
+bash "$REPO_ROOT/scripts/test-public-safety"
+bash "$REPO_ROOT/scripts/test-rosetta-activation"
+bash "$REPO_ROOT/scripts/test-ssh-private-state"
+bash "$REPO_ROOT/scripts/test-validation-tool-bootstrap"
+bash "$REPO_ROOT/scripts/test-zed-config"
 
 [[ -f flake.lock ]] || {
   echo "flake.lock is required" >&2
   exit 1
 }
 
-command -v nix >/dev/null 2>&1 || {
-  echo "nix is required for complete validation" >&2
-  exit 1
-}
+FLAKE_SOURCE="$("$REPO_ROOT/scripts/flake-source")"
+"$NIX_BIN" flake check --no-build "$FLAKE_SOURCE"
+gitleaks git --no-banner --redact "$REPO_ROOT"
+gitleaks git --staged --no-banner --redact "$REPO_ROOT"
+gitleaks dir --no-banner --redact "$FLAKE_SOURCE"
 
-nix flake check --no-build "path:$REPO_ROOT"
-nix eval "path:$REPO_ROOT#darwinConfigurations.mini.system.drvPath" >/dev/null
+fish_init_file="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/mac-setup-fish-init.XXXXXX")"
+cleanup_fish_init() {
+  /bin/rm -f -- "$fish_init_file" >/dev/null 2>&1 || true
+}
+trap cleanup_fish_init EXIT
+"$NIX_BIN" eval --raw \
+  "$FLAKE_SOURCE#darwinConfigurations.mini.config.home-manager.users.macuser.programs.fish.shellInit" \
+  >"$fish_init_file"
+bash "$REPO_ROOT/scripts/test-fish-path-order" "$fish_init_file"
+cleanup_fish_init
+trap - EXIT
+
+LOCAL_CONFIG="$REPO_ROOT/.local/config.json"
+if [[ -e "$LOCAL_CONFIG" || -L "$LOCAL_CONFIG" ]]; then
+  "$REPO_ROOT/scripts/validate-local-config" \
+    "$LOCAL_CONFIG" "$(/usr/bin/id -un)" "$HOME" mini >/dev/null
+  MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG" \
+    "$NIX_BIN" eval --impure \
+      "$FLAKE_SOURCE#darwinConfigurations.mini.system.drvPath" >/dev/null
+else
+  "$NIX_BIN" eval "$FLAKE_SOURCE#darwinConfigurations.mini.system.drvPath" >/dev/null
+fi
 
 echo "local validation passed"

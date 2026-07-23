@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Run Git without ambient repository/config redirection, replacement objects,
+# hooks, filesystem monitors, or user/system configuration.
+mac_setup_safe_git() {
+  [[ $# -ge 2 ]] || {
+    echo "safe Git requires a repository and command" >&2
+    return 2
+  }
+  local repository="$1"
+  shift
+
+  /usr/bin/env -i \
+    HOME=/var/empty \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    TMPDIR=/tmp \
+    LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git \
+      -c core.fsmonitor=false \
+      -c core.hooksPath=/dev/null \
+      -C "$repository" "$@"
+}
+
+# Query the real user-global config without honoring ambient GIT_* variables.
+mac_setup_safe_global_git_config() {
+  /usr/bin/env -i \
+    HOME="$HOME" \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    TMPDIR=/tmp \
+    LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git config --includes --global "$@"
+}
+
+# Query one already-validated private config file without following includes.
+mac_setup_safe_git_config_file() {
+  [[ $# -ge 2 ]] || {
+    echo "safe Git config query requires a file and option" >&2
+    return 2
+  }
+  local config_file="$1"
+  shift
+
+  /usr/bin/env -i \
+    HOME=/var/empty \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    TMPDIR=/tmp \
+    LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git config --file "$config_file" "$@"
+}

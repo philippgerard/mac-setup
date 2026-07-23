@@ -1,0 +1,614 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/private-state-paths
+source "$REPO_ROOT/scripts/private-state-paths"
+# shellcheck source=scripts/trusted-1password
+source "$REPO_ROOT/scripts/trusted-1password"
+
+CONFIG_FILE="${MAC_SETUP_MAIL_CONFIG_FILE:-$MAC_SETUP_MAIL_CONFIG_FILE_DEFAULT}"
+PROFILE_DIR="${MAC_SETUP_MAIL_PROFILE_DIR:-$MAC_SETUP_MAIL_PROFILE_DIR_DEFAULT}"
+CONFIG_FILE="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$CONFIG_FILE" "Mail account config")"
+PROFILE_DIR="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$PROFILE_DIR" "Mail profile directory")"
+ICLOUD_PROFILE="$REPO_ROOT/configuration-profiles/disable-icloud-mail-calendar-contacts.mobileconfig"
+PROFILE_STATE_SCRIPT="$REPO_ROOT/scripts/configuration-profile-state"
+MICROSOFT_PASSKEY_READINESS_SCRIPT="$REPO_ROOT/scripts/microsoft-native-passkey-readiness"
+INTERNET_ACCOUNTS_URL="x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension"
+ONEPASSWORD_ACCOUNT_VALUE="${MAC_SETUP_1PASSWORD_ACCOUNT:-}"
+VAULT_VALUE="${MAC_SETUP_1PASSWORD_VAULT:-}"
+ONEPASSWORD_SSH_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+FILEN_BIN="$HOME/.local/bin/filen"
+FILEN_APP="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
+FILEN_APP_LAUNCHER="$HOME/.local/bin/filen-menubar"
+FILEN_APP_VALIDATOR="$REPO_ROOT/scripts/validate-filen-app-copy"
+FILEN_STATE_DIR="$HOME/Library/Application Support/filen-cli"
+FILEN_CREDENTIAL_FILE="$FILEN_STATE_DIR/.filen-cli-keep-me-logged-in"
+FILEN_TARGET=""
+FILEN_APP_TARGET=""
+FILEN_IMMUTABLE_APP=""
+
+# Do not let ambient 1Password sessions, service credentials, Connect settings,
+# or defaults redirect private setup data.
+mac_setup_sanitize_1password_environment
+
+DRY_RUN=0
+SKIP_FILEN=0
+SKIP_GIT=0
+SKIP_GPG=0
+SKIP_ICLOUD=0
+SKIP_MAIL=0
+UPDATE_PROFILES=0
+NEEDS_1PASSWORD=0
+MAIL_ACCOUNT_EXPLICIT=0
+MAIL_ACCOUNT_SENTINEL="__mac_setup_no_mail_account__"
+MAIL_ACCOUNT_IDS=("$MAIL_ACCOUNT_SENTINEL")
+NATIVE_EXCHANGE_SELECTED=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/finish-setup [options]
+
+Complete the interactive, private-state portion of a fresh Mac setup. With no
+options, restore Git identity, the personal Mail/DAV account, legacy GPG keys,
+and Filen configuration, while guiding the required Apple profile approvals.
+
+Options:
+  --op-account <account>  Select a 1Password account ID or shorthand.
+  --vault <vault>         Select the 1Password vault used by restore helpers.
+  --mail-account <id>     Select a Mail/DAV or Exchange account; repeat for
+                          more than one. The default is personal-mail.
+  --mail-profile <id>     Compatibility alias for --mail-account.
+  --no-mail               Skip Mail/DAV metadata and account restoration.
+  --skip-git              Skip private Git identity restoration.
+  --skip-gpg              Skip legacy GPG restoration.
+  --skip-filen            Skip Filen config, authentication, and launch.
+  --skip-icloud           Skip the iCloud service restrictions profile.
+  --update-profiles       Permit explicit review of an installed profile whose
+                          effective content differs from the generated profile.
+  --dry-run               Print the plan without reading private state or
+                          opening applications.
+  -h, --help              Show this help.
+EOF
+}
+
+add_mail_account() {
+  local candidate="$1"
+  local existing
+
+  [[ "$candidate" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || {
+    echo "unsafe Mail account ID: $candidate" >&2
+    exit 2
+  }
+
+  for existing in "${MAIL_ACCOUNT_IDS[@]}"; do
+    [[ "$existing" == "$MAIL_ACCOUNT_SENTINEL" ]] && continue
+    [[ "$existing" == "$candidate" ]] && return
+  done
+  MAIL_ACCOUNT_IDS+=("$candidate")
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --op-account)
+      [[ $# -ge 2 ]] || { echo "missing value for --op-account" >&2; exit 2; }
+      ONEPASSWORD_ACCOUNT_VALUE="$2"
+      shift 2
+      ;;
+    --vault)
+      [[ $# -ge 2 ]] || { echo "missing value for --vault" >&2; exit 2; }
+      VAULT_VALUE="$2"
+      shift 2
+      ;;
+    --mail-account|--mail-profile)
+      option_name="$1"
+      [[ $# -ge 2 ]] || { echo "missing value for $option_name" >&2; exit 2; }
+      MAIL_ACCOUNT_EXPLICIT=1
+      add_mail_account "$2"
+      shift 2
+      ;;
+    --no-mail)
+      SKIP_MAIL=1
+      shift
+      ;;
+    --skip-git)
+      SKIP_GIT=1
+      shift
+      ;;
+    --skip-gpg)
+      SKIP_GPG=1
+      shift
+      ;;
+    --skip-filen)
+      SKIP_FILEN=1
+      shift
+      ;;
+    --skip-icloud)
+      SKIP_ICLOUD=1
+      shift
+      ;;
+    --update-profiles)
+      UPDATE_PROFILES=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$SKIP_MAIL" -eq 1 && "$MAIL_ACCOUNT_EXPLICIT" -eq 1 ]]; then
+  echo "--no-mail cannot be combined with a Mail account selection" >&2
+  exit 2
+fi
+if [[ "$SKIP_MAIL" -eq 0 && "${#MAIL_ACCOUNT_IDS[@]}" -eq 1 ]]; then
+  add_mail_account "personal-mail"
+fi
+if [[ "$SKIP_GIT" -eq 0 || "$SKIP_MAIL" -eq 0 || "$SKIP_GPG" -eq 0 || "$SKIP_FILEN" -eq 0 ]]; then
+  NEEDS_1PASSWORD=1
+fi
+
+[[ -z "$ONEPASSWORD_ACCOUNT_VALUE" || \
+  "$ONEPASSWORD_ACCOUNT_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+  echo "unsafe 1Password account ID or shorthand" >&2
+  exit 2
+}
+[[ "$VAULT_VALUE" != *$'\n'* && "$VAULT_VALUE" != *$'\r'* ]] || {
+  echo "unsafe 1Password vault name" >&2
+  exit 2
+}
+
+print_plan() {
+  local mail_id
+
+  echo "Guided fresh-setup plan:"
+  [[ "$SKIP_ICLOUD" -eq 1 ]] || echo "  - verify or open the iCloud service restrictions profile"
+  [[ "$SKIP_GIT" -eq 1 ]] || echo "  - restore private and public Git identities from 1Password"
+  if [[ "$SKIP_MAIL" -eq 0 ]]; then
+    echo "  - restore password-free Mail/DAV metadata from 1Password"
+    for mail_id in "${MAIL_ACCOUNT_IDS[@]}"; do
+      [[ "$mail_id" == "$MAIL_ACCOUNT_SENTINEL" ]] && continue
+      echo "  - configure selected Mail/DAV or Exchange account: $mail_id"
+    done
+  fi
+  [[ "$SKIP_GPG" -eq 1 ]] || echo "  - restore legacy GPG keys and ownertrust from 1Password"
+  [[ "$SKIP_FILEN" -eq 1 ]] || echo "  - restore Filen config, authenticate the CLI, and launch Filen Menubar"
+}
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  print_plan
+  exit 0
+fi
+
+[[ "$(uname -s)" == "Darwin" ]] || {
+  echo "finish-setup supports macOS only" >&2
+  exit 1
+}
+[[ "$(id -u)" -ne 0 ]] || {
+  echo "run finish-setup as the intended desktop user, not root" >&2
+  exit 1
+}
+[[ -r /dev/tty && -w /dev/tty ]] || {
+  echo "finish-setup requires an interactive terminal" >&2
+  exit 1
+}
+
+for command_name in jq mktemp plutil; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found after activation: $command_name" >&2
+    exit 1
+  }
+done
+if [[ "$NEEDS_1PASSWORD" -eq 1 ]]; then
+  command -v op >/dev/null 2>&1 || {
+    echo "required command not found after activation: op" >&2
+    exit 1
+  }
+fi
+if [[ "$SKIP_FILEN" -eq 0 ]]; then
+  command -v realpath >/dev/null 2>&1 || {
+    echo "required command not found after activation: realpath" >&2
+    exit 1
+  }
+fi
+
+pause_for_user() {
+  local prompt="$1"
+
+  printf '%s\n' "$prompt" >/dev/tty
+  printf 'Press Return to continue: ' >/dev/tty
+  IFS= read -r _ </dev/tty
+}
+
+choose_1password_account() {
+  local account_count
+  local account_index
+  local account_json
+  local selected_index
+
+  if [[ -n "$ONEPASSWORD_ACCOUNT_VALUE" ]]; then
+    export OP_ACCOUNT="$ONEPASSWORD_ACCOUNT_VALUE"
+    export MAC_SETUP_1PASSWORD_ACCOUNT="$ONEPASSWORD_ACCOUNT_VALUE"
+    return
+  fi
+
+  account_json="$(op account list --format json)" || {
+    echo "could not list configured 1Password accounts" >&2
+    exit 1
+  }
+  account_count="$(jq -er 'length' <<<"$account_json")"
+
+  if [[ "$account_count" -eq 0 ]]; then
+    /usr/bin/open -a "1Password" >/dev/null 2>&1 || true
+    pause_for_user "Add the intended account to 1Password, then enable its CLI integration and SSH agent."
+    account_json="$(op account list --format json)" || {
+      echo "could not list configured 1Password accounts" >&2
+      exit 1
+    }
+    account_count="$(jq -er 'length' <<<"$account_json")"
+  fi
+
+  [[ "$account_count" -gt 0 ]] || {
+    echo "no 1Password account is configured" >&2
+    exit 1
+  }
+
+  if [[ "$account_count" -eq 1 ]]; then
+    ONEPASSWORD_ACCOUNT_VALUE="$(jq -er '.[0] | [.shorthand, .id, .url] | map(select(type == "string" and length > 0)) | .[0]' <<<"$account_json")"
+  else
+    echo "Choose the 1Password account used by mac-setup:" >/dev/tty
+    jq -r '
+      to_entries[]
+      | (.value | [.shorthand, .url, .id] | map(select(type == "string" and length > 0)) | .[0]) as $label
+      | "  \(.key + 1). \($label)"
+    ' <<<"$account_json" >/dev/tty
+    printf 'Account number: ' >/dev/tty
+    IFS= read -r account_index </dev/tty
+    [[ "$account_index" =~ ^[0-9]+$ && "$account_index" -ge 1 && "$account_index" -le "$account_count" ]] || {
+      echo "invalid 1Password account selection" >&2
+      exit 1
+    }
+    selected_index=$((account_index - 1))
+    ONEPASSWORD_ACCOUNT_VALUE="$(jq -er --argjson index "$selected_index" '.[ $index ] | [.shorthand, .id, .url] | map(select(type == "string" and length > 0)) | .[0]' <<<"$account_json")"
+  fi
+
+  [[ "$ONEPASSWORD_ACCOUNT_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+    echo "1Password returned an unsafe account ID or shorthand" >&2
+    exit 1
+  }
+  export OP_ACCOUNT="$ONEPASSWORD_ACCOUNT_VALUE"
+  export MAC_SETUP_1PASSWORD_ACCOUNT="$ONEPASSWORD_ACCOUNT_VALUE"
+}
+
+authenticate_1password() {
+  choose_1password_account
+  [[ -z "$VAULT_VALUE" ]] || export MAC_SETUP_1PASSWORD_VAULT="$VAULT_VALUE"
+
+  if ! op account get --format json >/dev/null 2>&1; then
+    /usr/bin/open -a "1Password" >/dev/null 2>&1 || true
+    pause_for_user "Sign in to 1Password and enable Settings > Developer > Integrate with 1Password CLI."
+    op signin --account "$OP_ACCOUNT" >/dev/null
+  fi
+
+  op account get --format json >/dev/null 2>&1 || {
+    echo "1Password CLI authentication did not complete" >&2
+    exit 1
+  }
+
+  if [[ ! -S "$ONEPASSWORD_SSH_SOCKET" && "$SKIP_GIT" -eq 0 ]]; then
+    /usr/bin/open -a "1Password" >/dev/null 2>&1 || true
+    pause_for_user "Enable the 1Password SSH agent in Settings > Developer."
+    [[ -S "$ONEPASSWORD_SSH_SOCKET" ]] || {
+      echo "the 1Password SSH agent is still unavailable" >&2
+      exit 1
+    }
+  fi
+}
+
+secure_filen_cli_state() {
+  if [[ -e "$FILEN_STATE_DIR" || -L "$FILEN_STATE_DIR" ]]; then
+    [[ -d "$FILEN_STATE_DIR" && ! -L "$FILEN_STATE_DIR" && -O "$FILEN_STATE_DIR" ]] || {
+      echo "the Filen CLI state directory is unsafe" >&2
+      exit 1
+    }
+    /bin/chmod 700 "$FILEN_STATE_DIR"
+  fi
+
+  if [[ -e "$FILEN_CREDENTIAL_FILE" || -L "$FILEN_CREDENTIAL_FILE" ]]; then
+    [[ -f "$FILEN_CREDENTIAL_FILE" && ! -L "$FILEN_CREDENTIAL_FILE" && -O "$FILEN_CREDENTIAL_FILE" ]] || {
+      echo "the Filen CLI credential file is unsafe" >&2
+      exit 1
+    }
+    /bin/chmod 600 "$FILEN_CREDENTIAL_FILE"
+  fi
+}
+
+validate_filen_launcher() {
+  local filen_mode
+  local filen_owner
+
+  [[ -L "$FILEN_BIN" ]] || {
+    echo "the Home Manager Filen CLI launcher is missing or is not a symlink" >&2
+    exit 1
+  }
+  FILEN_TARGET="$(realpath "$FILEN_BIN")" || {
+    echo "the Home Manager Filen CLI launcher could not be resolved" >&2
+    exit 1
+  }
+  [[ "$FILEN_TARGET" =~ ^/nix/store/[0-9a-z]{32}-filen$ ]] || {
+    echo "the Filen CLI launcher does not resolve to the expected immutable Nix-store target" >&2
+    exit 1
+  }
+  [[ -f "$FILEN_TARGET" && ! -L "$FILEN_TARGET" && -x "$FILEN_TARGET" ]] || {
+    echo "the resolved Filen CLI target is not a regular executable" >&2
+    exit 1
+  }
+  filen_owner="$(/usr/bin/stat -Lf '%Su' "$FILEN_TARGET")"
+  filen_mode="$(/usr/bin/stat -Lf '%Lp' "$FILEN_TARGET")"
+  [[ "$filen_owner" == "root" && "$filen_mode" =~ ^[0-7]{3,4}$ ]] || {
+    echo "the resolved Filen CLI target has unsafe ownership or permissions" >&2
+    exit 1
+  }
+  (( (8#$filen_mode & 8#22) == 0 )) || {
+    echo "the resolved Filen CLI target is writable outside its owner" >&2
+    exit 1
+  }
+}
+
+validate_filen_app() {
+  local app_target_mode
+  local app_target_owner
+
+  [[ -L "$FILEN_APP_LAUNCHER" ]] || {
+    echo "the Home Manager Filen Menubar launcher is missing or is not a symlink" >&2
+    exit 1
+  }
+  FILEN_APP_TARGET="$(realpath "$FILEN_APP_LAUNCHER")" || {
+    echo "the Home Manager Filen Menubar launcher could not be resolved" >&2
+    exit 1
+  }
+  [[ "$FILEN_APP_TARGET" =~ ^/nix/store/[0-9a-z]{32}-filen-menubar-[^/]+/Applications/Filen\ Menubar\.app/Contents/MacOS/filen-menubar$ ]] || {
+    echo "the Filen Menubar launcher does not resolve to the pinned application" >&2
+    exit 1
+  }
+  [[ -f "$FILEN_APP_TARGET" && ! -L "$FILEN_APP_TARGET" && \
+    -x "$FILEN_APP_TARGET" ]] || {
+    echo "the immutable Filen Menubar executable is unavailable or unsafe" >&2
+    exit 1
+  }
+  app_target_owner="$(/usr/bin/stat -Lf '%Su' "$FILEN_APP_TARGET")"
+  app_target_mode="$(/usr/bin/stat -Lf '%Lp' "$FILEN_APP_TARGET")"
+  [[ "$app_target_owner" == "root" && "$app_target_mode" =~ ^[0-7]{3,4}$ ]] || {
+    echo "the immutable Filen Menubar executable has unsafe ownership or permissions" >&2
+    exit 1
+  }
+  (( (8#$app_target_mode & 8#22) == 0 )) || {
+    echo "the immutable Filen Menubar executable is writable outside its owner" >&2
+    exit 1
+  }
+
+  FILEN_IMMUTABLE_APP="${FILEN_APP_TARGET%/Contents/MacOS/filen-menubar}"
+  "$FILEN_APP_VALIDATOR" "$FILEN_IMMUTABLE_APP" "$FILEN_APP"
+}
+
+ensure_profile() {
+  local display_name="$1"
+  local profile_file="$2"
+  local profile_state
+
+  profile_state="$($PROFILE_STATE_SCRIPT "$profile_file")"
+  case "$profile_state" in
+    exact)
+      echo "$display_name is already installed."
+      return
+      ;;
+    missing)
+      ;;
+    different)
+      if [[ "$UPDATE_PROFILES" -ne 1 ]]; then
+        echo "A different revision of $display_name is installed." >&2
+        echo "Review the migration notes, then rerun with --update-profiles to present the update." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "unexpected configuration profile state for $display_name" >&2
+      exit 1
+      ;;
+  esac
+
+  /usr/bin/open "$profile_file"
+  pause_for_user "Review and install $display_name in System Settings > General > Device Management. Complete any credential prompts."
+
+  profile_state="$($PROFILE_STATE_SCRIPT "$profile_file")"
+  [[ "$profile_state" == "exact" ]] || {
+    echo "$display_name was not detected in its expected installed state; rerun finish-setup to resume." >&2
+    exit 1
+  }
+  echo "$display_name was installed."
+}
+
+validate_mail_profile() {
+  local account_id="$1"
+
+  MAIL_PROFILE_FILE="$PROFILE_DIR/$account_id.mobileconfig"
+  "$REPO_ROOT/scripts/validate-mail-account-profile" \
+    "$account_id" "$CONFIG_FILE" "$MAIL_PROFILE_FILE" >/dev/null
+}
+
+mail_account_type() {
+  local account_id="$1"
+
+  jq -er --arg id "$account_id" '
+    [.accounts[] | select(.id == $id)] as $matches
+    | if ($matches | length) == 1 then
+        $matches[0].type
+      else
+        error("selected Mail account ID is not present exactly once")
+      end
+  ' "$CONFIG_FILE"
+}
+
+configure_native_exchange_account() {
+  local account_description
+  local account_email
+  local account_id="$1"
+
+  report_microsoft_native_passkey_broker_state
+
+  account_description="$(jq -er --arg id "$account_id" \
+    '.accounts[] | select(.id == $id) | .description' "$CONFIG_FILE")"
+  account_email="$(jq -er --arg id "$account_id" \
+    '.accounts[] | select(.id == $id) | .email_address' "$CONFIG_FILE")"
+
+  open_internet_accounts
+  confirm_native_exchange_setup "$account_description" "$account_email"
+  NATIVE_EXCHANGE_SELECTED=1
+
+  echo "Native Microsoft Exchange setup was user-confirmed for account '$account_id'."
+  echo "mac-setup cannot programmatically verify an unmanaged Internet Account."
+}
+
+report_microsoft_native_passkey_broker_state() {
+  if "$MICROSOFT_PASSKEY_READINESS_SCRIPT"; then
+    return
+  fi
+
+  cat >&2 <<'EOF'
+This advisory result does not prove that Apple Internet Accounts will fail:
+its authentication surface is not documented precisely enough to make that
+decision locally. Setup will open the native flow, but cancel it if the required
+security-key or certificate method is unavailable. Do not approve an unexpected
+Authenticator request merely to complete provisioning.
+EOF
+  return
+}
+
+open_internet_accounts() {
+  /usr/bin/open "$INTERNET_ACCOUNTS_URL"
+}
+
+confirm_native_exchange_setup() {
+  local account_description="$1"
+  local account_email="$2"
+  local confirmation
+
+  printf '%s\n' "In System Settings > Internet Accounts:
+  1. If '$account_description' already exists and works, do not add a duplicate.
+  2. Otherwise choose Add Account > Microsoft Exchange and enter $account_email.
+  3. Choose Sign In, not Configure Manually.
+  4. For FIDO2/passkey authentication, choose Sign-in options and Security key
+     on Microsoft's first sign-in page, before entering a password. Cancel if
+     the flow instead reaches Authenticator number matching without offering
+     the required security key.
+     For PIV/CBA, use the organization-provisioned certificate or smart-card
+     option instead. If neither method appears, test the key in a private
+     Safari or Chrome window and ask IT to inspect the exact sign-in.
+  5. Enable the wanted Mail, Contacts, Calendars, and Reminders services only
+     after the required authentication method succeeds.
+
+If an older managed Exchange profile exists, stop first: verify there is no
+unsent or local-only mail, remove that profile in General > Device Management,
+then rerun this setup step." >/dev/tty
+  printf '%s' \
+    "After the account and wanted services are visible, type 'configured': " \
+    >/dev/tty
+  IFS= read -r confirmation </dev/tty
+  [[ "$confirmation" == "configured" ]] || {
+    echo "Native Exchange setup was not confirmed; rerun finish-setup to resume." >&2
+    exit 1
+  }
+}
+
+configure_mail_account() {
+  local account_id="$1"
+  local account_type
+
+  account_type="$(mail_account_type "$account_id")" || {
+    echo "selected Mail account is missing or invalid: $account_id" >&2
+    exit 1
+  }
+  case "$account_type" in
+    imap)
+      validate_mail_profile "$account_id"
+      ensure_profile "Mail/DAV profile '$account_id'" "$MAIL_PROFILE_FILE"
+      ;;
+    exchange_oauth)
+      configure_native_exchange_account "$account_id"
+      ;;
+    *)
+      echo "unsupported Mail account type for '$account_id': $account_type" >&2
+      exit 1
+      ;;
+  esac
+}
+
+print_plan
+if [[ "$NEEDS_1PASSWORD" -eq 1 ]]; then
+  authenticate_1password
+fi
+
+if [[ "$SKIP_ICLOUD" -eq 0 ]]; then
+  "$REPO_ROOT/scripts/test-icloud-service-restrictions-profile" >/dev/null
+  ensure_profile "the iCloud service restrictions profile" "$ICLOUD_PROFILE"
+fi
+
+if [[ "$SKIP_GIT" -eq 0 ]]; then
+  "$REPO_ROOT/scripts/configure-git-identity"
+fi
+
+if [[ "$SKIP_MAIL" -eq 0 ]]; then
+  "$REPO_ROOT/scripts/restore-mail-accounts-from-1password" --no-open
+  for mail_account_id in "${MAIL_ACCOUNT_IDS[@]}"; do
+    [[ "$mail_account_id" == "$MAIL_ACCOUNT_SENTINEL" ]] && continue
+    configure_mail_account "$mail_account_id"
+  done
+fi
+
+if [[ "$SKIP_GPG" -eq 0 ]]; then
+  "$REPO_ROOT/scripts/restore-gpg-from-1password"
+fi
+
+if [[ "$SKIP_FILEN" -eq 0 ]]; then
+  validate_filen_launcher
+  validate_filen_app
+  if /usr/bin/pgrep -x filen-menubar >/dev/null 2>&1; then
+    pause_for_user "Quit Filen Menubar from its menu before its configuration is restored."
+    /usr/bin/pgrep -x filen-menubar >/dev/null 2>&1 && {
+      echo "Filen Menubar is still running" >&2
+      exit 1
+    }
+  fi
+
+  "$REPO_ROOT/scripts/restore-filen-menubar-from-1password"
+  secure_filen_cli_state
+  if ! "$FILEN_TARGET" whoami </dev/null >/dev/null 2>&1; then
+    echo "Authenticate the Filen CLI when prompted."
+    "$FILEN_TARGET" whoami </dev/tty
+  fi
+  secure_filen_cli_state
+  /usr/bin/open "$FILEN_IMMUTABLE_APP"
+fi
+
+printf '\nGuided setup steps completed.\n'
+if [[ "$NATIVE_EXCHANGE_SELECTED" -eq 1 ]]; then
+  echo "The native Exchange account was explicitly user-confirmed, not programmatically verified."
+fi
+echo "Verify every selected account, identity, key, and sync service before relying on this Mac."

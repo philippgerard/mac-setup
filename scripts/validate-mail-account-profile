@@ -1,0 +1,112 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/private-state-paths
+source "$REPO_ROOT/scripts/private-state-paths"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/validate-mail-account-profile <account-id> <config.json> <profile.mobileconfig>
+
+Verify that a generated Mail/DAV profile exactly matches the deterministic
+profile produced from the validated, password-free account metadata.
+EOF
+}
+
+if [[ $# -ne 3 ]]; then
+  usage >&2
+  exit 2
+fi
+
+ACCOUNT_ID="$1"
+CONFIG_FILE="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$2" "Mail account config")"
+PROFILE_FILE="$(mac_setup_canonical_private_path \
+  "$REPO_ROOT" "$3" "Mail account profile")"
+PROFILE_DIR="$(/usr/bin/dirname "$PROFILE_FILE")"
+CONFIG_DIR="$(/usr/bin/dirname "$CONFIG_FILE")"
+
+for command_name in cmp install jq mktemp; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+
+[[ "$ACCOUNT_ID" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || {
+  echo "unsafe Mail profile ID" >&2
+  exit 1
+}
+
+[[ -d "$CONFIG_DIR" && ! -L "$CONFIG_DIR" && -O "$CONFIG_DIR" ]] || {
+  echo "restored Mail account metadata directory is unsafe or missing" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$CONFIG_DIR")" == "700" ]] || {
+  echo "restored Mail account metadata directory must have mode 0700" >&2
+  exit 1
+}
+"$REPO_ROOT/scripts/validate-mail-accounts-config" "$CONFIG_FILE" >/dev/null
+account_count="$(jq -er --arg id "$ACCOUNT_ID" \
+  '[.accounts[] | select(.id == $id)] | length' "$CONFIG_FILE")"
+[[ "$account_count" -eq 1 ]] || {
+  echo "Mail account ID is not present exactly once in the restored metadata: $ACCOUNT_ID" >&2
+  exit 1
+}
+account_type="$(jq -er --arg id "$ACCOUNT_ID" \
+  '.accounts[] | select(.id == $id) | .type' "$CONFIG_FILE")"
+[[ "$account_type" == "imap" ]] || {
+  echo "Mail account uses native Microsoft Exchange setup and has no configuration profile: $ACCOUNT_ID" >&2
+  exit 1
+}
+[[ -d "$PROFILE_DIR" && ! -L "$PROFILE_DIR" && -O "$PROFILE_DIR" ]] || {
+  echo "generated Mail profile directory is unsafe" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$PROFILE_DIR")" == "700" ]] || {
+  echo "generated Mail profile directory must have mode 0700" >&2
+  exit 1
+}
+[[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" && -O "$PROFILE_FILE" ]] || {
+  echo "generated Mail profile is unsafe or missing: $ACCOUNT_ID" >&2
+  exit 1
+}
+[[ "$(/usr/bin/stat -f '%Lp' "$PROFILE_FILE")" == "600" ]] || {
+  echo "generated Mail profile must have mode 0600: $ACCOUNT_ID" >&2
+  exit 1
+}
+
+validation_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-mail-profile-check.XXXXXX")"
+cleanup() {
+  if [[ -n "${validation_dir:-}" ]]; then
+    /bin/rm -rf -- "$validation_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+chmod 700 "$validation_dir"
+
+config_snapshot="$validation_dir/mail-accounts.json"
+expected_dir="$validation_dir/expected"
+install -m 600 "$CONFIG_FILE" "$config_snapshot"
+
+"$REPO_ROOT/scripts/validate-mail-accounts-config" "$config_snapshot" >/dev/null
+
+"$REPO_ROOT/scripts/generate-mail-account-profiles" "$config_snapshot" "$expected_dir" >/dev/null
+expected_profile="$expected_dir/$ACCOUNT_ID.mobileconfig"
+[[ -f "$expected_profile" && ! -L "$expected_profile" ]] || {
+  echo "deterministic Mail profile generation failed: $ACCOUNT_ID" >&2
+  exit 1
+}
+
+cmp -s "$expected_profile" "$PROFILE_FILE" || {
+  echo "generated Mail profile does not exactly match restored metadata: $ACCOUNT_ID" >&2
+  exit 1
+}
+
+echo "generated Mail profile validation passed: $ACCOUNT_ID"

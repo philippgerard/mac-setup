@@ -25,6 +25,7 @@ Do not erase the Mac until every final gate is green.
 - [ ] Every dirty working tree is committed, pushed, or independently archived.
 - [ ] Every local-only and detached commit is reachable remotely or included in a verified Git bundle.
 - [ ] Cloud file-sync providers report complete sync and representative files open from another device.
+- [ ] `scripts/backup-mail-accounts-to-1password` completes and verifies the password-free private Mail/DAV metadata.
 - [ ] `scripts/backup-filen-menubar-to-1password` completes and verifies the private sync config.
 
 ## Backup and stateful data
@@ -39,9 +40,10 @@ Container and Docker volumes on this Mac are intentionally excluded.
 ## Identity and access
 
 - [ ] 1Password recovery works from another trusted device.
-- [ ] The `Mac Setup Git Identity` item contains private identity fields plus a pseudonymous name, GitHub noreply address, and SSH signing key for public-repository commits.
+- [ ] The `Mac Setup Git Identity` item contains private identity fields plus the exact public repository-owner name, GitHub noreply address, and SSH signing key for public-repository commits.
 - [ ] The 1Password SSH agent can authenticate and sign a test commit.
 - [ ] `scripts/backup-gpg-to-1password` completes and verifies every local secret key plus ownertrust.
+- [ ] Required IMAP and CalDAV/CardDAV app passwords are stored in separate 1Password Login items; Microsoft 365 browser sign-in with the registered YubiKey works; any Company Portal, MDM, Enterprise SSO, or PIV/certificate prerequisites used by Apple Internet Accounts are documented by the organization; and the desired account selection for each Mac is known.
 - [ ] Code-signing identities/private keys are independently recoverable.
 - [ ] Apple account, FileVault recovery, and important recovery codes are accessible.
 - [ ] Private SSH hosts and repository manifests are stored outside the public repository.
@@ -49,6 +51,6 @@ Container and Docker volumes on this Mac are intentionally excluded.
 ## Final gates
 
 - [ ] The tested configuration revision is available remotely.
-- [ ] The private recovery manifest has no unverified item.
+- [ ] The private recovery manifest has no unverified item, including the `Mac Setup Mail Accounts` document.
 - [ ] All local work and required stateful data have independent restore paths.
 - [ ] The clean-install runbook has been rehearsed without destructive cleanup.

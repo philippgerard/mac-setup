@@ -6,7 +6,6 @@
     ./nix.nix
     ./rosetta.nix
     ./system.nix
-    ./xcode.nix
     ./homebrew.nix
   ];
 
