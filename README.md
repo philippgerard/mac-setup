@@ -49,7 +49,7 @@ The `mini` host composes all currently selected profiles. Homebrew cleanup, auto
 
 ## Fresh-machine bootstrap
 
-The bootstrap defaults to build-only. Use the full SHA of a tested commit rather than a moving branch. This runbook currently targets the configuration tested at `42d0a1e9dcb10549d5c2dd4b9ad4d35023d99084`:
+The bootstrap defaults to build-only. Use the full SHA of a tested commit rather than a moving branch. This runbook currently targets the configuration tested at `8b875ee8b74f2ffa059c307670fd131677ea206c`:
 
 Always copy this bootstrap block from the current public `main` README, not from
 a previously pinned local checkout: a commit cannot contain its own future SHA.
@@ -58,7 +58,7 @@ Setup records the commit actually used in ignored
 self-referential verification pin.
 
 ```bash
-revision='42d0a1e9dcb10549d5c2dd4b9ad4d35023d99084'
+revision='8b875ee8b74f2ffa059c307670fd131677ea206c'
 /usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 \
   "https://raw.githubusercontent.com/philippgerard/mac-setup/${revision}/setup.sh" \
   | /bin/bash -p -s -- --revision "$revision"
