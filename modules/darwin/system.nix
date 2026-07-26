@@ -33,7 +33,7 @@
 
       # Mouse/Trackpad
       "com.apple.mouse.tapBehavior" = 1;
-      "com.apple.swipescrolldirection" = true;
+      "com.apple.swipescrolldirection" = false;
 
       # Window behavior
       NSAutomaticWindowAnimationsEnabled = false;
