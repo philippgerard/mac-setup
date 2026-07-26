@@ -1,0 +1,305 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+
+RELEASE_API_URL="https://api.github.com/repos/philippgerard/filen-menubar/releases/latest"
+RELEASE_FILE="$REPO_ROOT/modules/home/filen-menubar-release.json"
+offline_release_json=""
+offline_asset=""
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/update-filen-menubar
+       scripts/update-filen-menubar --release-json FILE --asset FILE
+
+Update the checksum-pinned Filen Menubar package to GitHub's latest stable
+release. The file-backed form is intended for offline regression tests.
+EOF
+}
+
+case $# in
+  0)
+    ;;
+  4)
+    [[ "$1" == "--release-json" && "$3" == "--asset" ]] || {
+      usage >&2
+      exit 2
+    }
+    offline_release_json="$2"
+    offline_asset="$4"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+JQ_BIN="$(command -v jq || true)"
+[[ "$JQ_BIN" == /* && -f "$JQ_BIN" && -x "$JQ_BIN" ]] || {
+  echo "required command not found in the trusted command path: jq" >&2
+  exit 1
+}
+
+release_directory="$REPO_ROOT/modules/home"
+[[ -d "$release_directory" && ! -L "$release_directory" && \
+  -O "$release_directory" ]] || {
+  echo "Filen Menubar release metadata directory is unsafe" >&2
+  exit 1
+}
+[[ -f "$RELEASE_FILE" && ! -L "$RELEASE_FILE" && -O "$RELEASE_FILE" ]] || {
+  echo "Filen Menubar release metadata is missing or unsafe" >&2
+  exit 1
+}
+release_mode="$(/usr/bin/stat -f '%Lp' "$RELEASE_FILE")"
+[[ "$release_mode" =~ ^[0-7]{3,4}$ ]] || {
+  echo "Filen Menubar release metadata has unsupported permissions" >&2
+  exit 1
+}
+(( (8#$release_mode & 8#22) == 0 )) || {
+  echo "Filen Menubar release metadata is writable outside its owner" >&2
+  exit 1
+}
+
+"$JQ_BIN" -e '
+  type == "object" and
+  keys == ["hash", "version"] and
+  (.version | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+  (.hash | type == "string" and test("^sha256-[A-Za-z0-9+/]{43}=$"))
+' "$RELEASE_FILE" >/dev/null || {
+  echo "Filen Menubar release metadata has an unsupported schema" >&2
+  exit 1
+}
+
+current_version="$("$JQ_BIN" -er '.version' "$RELEASE_FILE")"
+current_hash="$("$JQ_BIN" -er '.hash' "$RELEASE_FILE")"
+release_file_original_hash="$(
+  /usr/bin/shasum -a 256 "$RELEASE_FILE" | /usr/bin/awk '{print $1}'
+)"
+
+temp_base="${TMPDIR:-/tmp}"
+temp_base="${temp_base%/}"
+[[ -n "$temp_base" && "$temp_base" == /* && -d "$temp_base" ]] || {
+  echo "temporary directory root is unsafe" >&2
+  exit 1
+}
+temp_base="$(cd "$temp_base" && pwd -P)"
+work_dir="$(/usr/bin/mktemp -d "$temp_base/mac-setup-filen-update.XXXXXX")"
+release_json="$work_dir/release.json"
+asset_file="$work_dir/filen-menubar.dmg"
+release_tmp=""
+cleanup() {
+  if [[ -n "${release_tmp:-}" && -f "$release_tmp" && ! -L "$release_tmp" && \
+    "$release_tmp" == "$release_directory"/.filen-menubar-release.json.* ]]; then
+    /bin/rm -f -- "$release_tmp" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${work_dir:-}" && -d "$work_dir" && ! -L "$work_dir" && \
+    "$work_dir" == "$temp_base"/mac-setup-filen-update.* ]]; then
+    /bin/rm -rf -- "$work_dir" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+validate_offline_file() {
+  local description="$1"
+  local source_file="$2"
+
+  [[ "$source_file" == /* && -f "$source_file" && ! -L "$source_file" && \
+    -O "$source_file" ]] || {
+    echo "$description fixture is missing or unsafe" >&2
+    return 1
+  }
+}
+
+if [[ -n "$offline_release_json" ]]; then
+  validate_offline_file "release JSON" "$offline_release_json"
+  validate_offline_file "release asset" "$offline_asset"
+  /bin/cp "$offline_release_json" "$release_json"
+else
+  /usr/bin/curl \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --connect-timeout 10 \
+    --max-time 60 \
+    --retry 2 \
+    --retry-delay 1 \
+    --header "Accept: application/vnd.github+json" \
+    --header "X-GitHub-Api-Version: 2022-11-28" \
+    --header "User-Agent: mac-setup-filen-updater" \
+    --output "$release_json" \
+    "$RELEASE_API_URL"
+fi
+
+release_fields="$(
+  # shellcheck disable=SC2016 # jq variables are expanded by jq.
+  "$JQ_BIN" -er '
+    if type != "object" or .draft != false or .prerelease != false then
+      error("latest release is not a published stable release")
+    else
+      .tag_name as $tag
+      | ($tag
+        | capture("^v(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$").version
+      ) as $version
+      | [
+          .assets[]?
+          | select(
+              .state == "uploaded" and
+              .name == ("Filen.Menubar_" + $version + "_aarch64.dmg")
+            )
+        ] as $matching_assets
+      | if ($matching_assets | length) != 1 then
+          error("release must contain exactly one Apple Silicon DMG")
+        else
+          [
+            $version,
+            $tag,
+            $matching_assets[0].name,
+            $matching_assets[0].browser_download_url,
+            $matching_assets[0].digest
+          ]
+          | @tsv
+        end
+    end
+  ' "$release_json"
+)" || {
+  echo "GitHub returned unsupported Filen Menubar release metadata" >&2
+  exit 1
+}
+
+IFS=$'\t' read -r \
+  latest_version latest_tag asset_name asset_url asset_digest \
+  <<<"$release_fields"
+[[ "$latest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && \
+  "$latest_tag" == "v$latest_version" && \
+  "$asset_name" == "Filen.Menubar_${latest_version}_aarch64.dmg" && \
+  "$asset_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+  echo "Filen Menubar release fields have an unsupported format" >&2
+  exit 1
+}
+expected_asset_url="https://github.com/philippgerard/filen-menubar/releases/download/$latest_tag/$asset_name"
+[[ "$asset_url" == "$expected_asset_url" ]] || {
+  echo "Filen Menubar release asset has an unexpected download URL" >&2
+  exit 1
+}
+
+expected_hex="${asset_digest#sha256:}"
+expected_sri="$(
+  "$NIX_BIN" hash convert --hash-algo sha256 --to sri "$expected_hex"
+)"
+[[ "$expected_sri" =~ ^sha256-[A-Za-z0-9+/]{43}=$ ]] || {
+  echo "Filen Menubar release digest could not be converted for Nix" >&2
+  exit 1
+}
+
+version_relation="$(
+  # shellcheck disable=SC2016 # jq variables are expanded by jq.
+  "$JQ_BIN" -nr \
+    --arg current "$current_version" \
+    --arg latest "$latest_version" '
+      def components: split(".") | map(tonumber);
+      ($current | components) as $current_components
+      | ($latest | components) as $latest_components
+      | if $latest_components == $current_components then
+          "same"
+        elif $latest_components > $current_components then
+          "newer"
+        else
+          "older"
+        end
+    '
+)"
+case "$version_relation" in
+  same)
+    [[ "$current_hash" == "$expected_sri" ]] || {
+      echo "Filen Menubar release asset changed without a version change" >&2
+      exit 1
+    }
+    echo "Filen Menubar $current_version is already current."
+    exit 0
+    ;;
+  newer)
+    ;;
+  older)
+    echo "refusing to downgrade Filen Menubar from $current_version to $latest_version" >&2
+    exit 1
+    ;;
+  *)
+    echo "could not compare Filen Menubar release versions" >&2
+    exit 1
+    ;;
+esac
+
+if [[ -n "$offline_asset" ]]; then
+  /bin/cp "$offline_asset" "$asset_file"
+else
+  /usr/bin/curl \
+    --proto '=https' \
+    --proto-redir '=https' \
+    --fail \
+    --silent \
+    --show-error \
+    --location \
+    --connect-timeout 10 \
+    --max-time 120 \
+    --retry 2 \
+    --retry-delay 1 \
+    --output "$asset_file" \
+    "$asset_url"
+fi
+
+actual_hex="$(
+  /usr/bin/shasum -a 256 "$asset_file" | /usr/bin/awk '{print $1}'
+)"
+[[ "$actual_hex" == "$expected_hex" ]] || {
+  echo "Filen Menubar release asset does not match GitHub's SHA-256 digest" >&2
+  exit 1
+}
+
+current_release_file_hash="$(
+  /usr/bin/shasum -a 256 "$RELEASE_FILE" | /usr/bin/awk '{print $1}'
+)"
+[[ "$current_release_file_hash" == "$release_file_original_hash" && \
+  -f "$RELEASE_FILE" && ! -L "$RELEASE_FILE" && -O "$RELEASE_FILE" ]] || {
+  echo "Filen Menubar release metadata changed during the update" >&2
+  exit 1
+}
+
+release_tmp="$(
+  /usr/bin/mktemp "$release_directory/.filen-menubar-release.json.XXXXXX"
+)"
+/usr/bin/printf \
+  '{\n  "version": "%s",\n  "hash": "%s"\n}\n' \
+  "$latest_version" "$expected_sri" >"$release_tmp"
+/bin/chmod 644 "$release_tmp"
+
+# shellcheck disable=SC2016 # jq variables are expanded by jq.
+"$JQ_BIN" -e \
+  --arg version "$latest_version" \
+  --arg hash "$expected_sri" \
+  '.version == $version and .hash == $hash and keys == ["hash", "version"]' \
+  "$release_tmp" >/dev/null
+
+current_release_file_hash="$(
+  /usr/bin/shasum -a 256 "$RELEASE_FILE" | /usr/bin/awk '{print $1}'
+)"
+[[ "$current_release_file_hash" == "$release_file_original_hash" && \
+  -f "$RELEASE_FILE" && ! -L "$RELEASE_FILE" && -O "$RELEASE_FILE" ]] || {
+  echo "Filen Menubar release metadata changed before replacement" >&2
+  exit 1
+}
+/bin/mv "$release_tmp" "$RELEASE_FILE"
+release_tmp=""
+
+echo "Updated Filen Menubar from $current_version to $latest_version."

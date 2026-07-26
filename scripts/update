@@ -11,6 +11,8 @@ mac_setup_harden_environment
 source "$REPO_ROOT/scripts/trusted-nix"
 NIX_BIN="$(mac_setup_trusted_nix)"
 
+"$REPO_ROOT/scripts/update-filen-menubar"
+
 temp_base="${TMPDIR:-/tmp}"
 temp_base="${temp_base%/}"
 work_dir="$(/usr/bin/mktemp -d "$temp_base/mac-setup-update.XXXXXX")"
@@ -53,4 +55,4 @@ lock_tmp=""
 "$REPO_ROOT/scripts/validate"
 "$REPO_ROOT/scripts/rebuild" build
 
-echo "Dependencies and the lock file were updated; review and commit the diff before switching."
+echo "Dependencies and release pins were updated; review and commit the diff before switching."

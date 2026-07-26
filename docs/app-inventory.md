@@ -13,7 +13,8 @@ The `mini` host composes:
 - `work`: individual Microsoft Office apps, Teams, Slack, and Notion;
 - `gaming`: GeForce NOW.
 
-The package lists intentionally replace Ghostty with Otty, Ice with Barbee, Latest with Updatest, and the old Tailscale token with `tailscale-app`.
+The package lists intentionally replace Ghostty with Otty, Latest with
+Updatest, and the old Tailscale token with `tailscale-app`.
 
 The 1Password desktop app remains a Homebrew cask, while its CLI is installed
 from the pinned Nix collection so private restore helpers resolve an immutable
@@ -24,7 +25,9 @@ manual removal.
 
 Filen Menubar is the explicit exception to the Homebrew-first GUI policy: its
 Apple Silicon DMG is checksum-pinned in Nix because no stable cask exists. The
-pinned Nix package collection builds its stable CLI as a standalone Apple
+reviewed maintenance workflow automatically refreshes that pin from the latest
+stable GitHub release and verifies the release-asset digest before building.
+The pinned Nix package collection builds its stable CLI as a standalone Apple
 Silicon executable; it requires no Node runtime and has self-updates disabled.
 The launcher also fixes its state directory to the protected modern macOS path,
 so a leftover `~/.filen-cli` directory cannot change credential precedence.
@@ -74,8 +77,9 @@ delete application/data directories wholesale.
 - Microsoft Defender, OneDrive, and OneNote, which are bundled by the combined
   `microsoft-office` cask but are not required here;
 - Conductor and Deliveries, which are not part of the selected baseline;
-- Collections, Paperparrot, Raycast, Remind Me Faster, Replacicon, Trace,
-  Whatcable, and WiFi Signal, which are no longer part of the selected baseline;
+- Barbee, Collections, HazeOver, Paperparrot, Raycast, Remind Me Faster,
+  Replacicon, Trace, Whatcable, WiFi Signal, and Zipic, which are no longer part
+  of the selected baseline;
 - Xcode, which is installed manually from the App Store only when needed, and
   XcodeBuildMCP, which is omitted with its Xcode dependency;
 - Steam when cloud gaming is the selected restore path;

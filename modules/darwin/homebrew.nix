@@ -14,17 +14,9 @@
       cleanup = "none";
     };
 
-    taps = [
-      {
-        name = "shebe-oss/tap";
-        trusted = true;
-      }
-    ];
-
     brews = [
       "mas"
       "mole"
-      "shebe-oss/tap/shebe"
     ];
   };
 }

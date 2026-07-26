@@ -14,7 +14,7 @@ scripts/rebuild build
 # Build and activate
 scripts/rebuild switch
 
-# Intentionally update flake.lock and build the result for review
+# Update flake.lock and the Filen Menubar release pin, then build for review
 scripts/update
 
 # Compare declared Homebrew/MAS state with the live Mac
@@ -25,7 +25,14 @@ scripts/homebrew-dry-run
 active generation does not yet provide a required tool. It therefore also
 works before the first activation of a newly added validator.
 
-Review `flake.lock` and the package diff before every activation. Do not run
+`scripts/update` queries GitHub for Filen Menubar's latest published stable
+release. When a newer version exists, it requires the expected Apple Silicon
+DMG, verifies the downloaded bytes against GitHub's release-asset SHA-256
+digest, and atomically updates the tracked version and Nix hash. An unchanged
+version with different bytes is rejected rather than silently repinned.
+
+Review `flake.lock`, `modules/home/filen-menubar-release.json`, and the package
+diff before every activation. Do not run
 `brew bundle cleanup --force` or enable activation cleanup until
 `scripts/homebrew-dry-run` has been reviewed line by line. Omitted applications
 remain installed until they are removed deliberately.
@@ -72,7 +79,9 @@ it for tokens, private paths, and account identifiers.
 
 ## Filen
 
-Filen Menubar is installed from a checksum-pinned Apple Silicon release. Home
+Filen Menubar is installed from a checksum-pinned Apple Silicon release.
+`scripts/update` advances that pin to GitHub's latest stable release and builds
+it without activation so the version and hash change remain reviewable. Home
 Manager copies a real, Spotlight-searchable application bundle to
 `~/Applications/Home Manager Apps/Filen Menubar.app` and starts it at login.
 

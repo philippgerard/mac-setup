@@ -15,12 +15,12 @@
     "shottr"
     "spamsieve"
     "tailscale-app"
+    "thaw"
     "updatest"
   ];
 
   homebrew.masApps = {
     "1Password for Safari" = 1569813296;
-    "Barbee" = 1548711022;
     "Command X" = 6448461551;
     "Dato" = 1470584107;
     "HacKit" = 1549557075;

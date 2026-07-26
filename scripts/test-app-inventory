@@ -9,7 +9,7 @@ NIX_PACKAGE_MODULE="$REPO_ROOT/modules/home/packages.nix"
 HOMEBREW_DRY_RUN="$REPO_ROOT/scripts/homebrew-dry-run"
 
 for unwanted_declaration in \
-  raycast replacicon whatcable \
+  raycast replacicon whatcable zipic \
   microsoft-office microsoft-defender microsoft-onedrive onedrive \
   microsoft-onenote conductor deliveries; do
   if /usr/bin/grep -Fq "\"$unwanted_declaration\"" "${PROFILE_FILES[@]}"; then
@@ -23,8 +23,19 @@ if /usr/bin/grep -Fiq 'xcodebuildmcp' "$HOMEBREW_MODULE"; then
   exit 1
 fi
 
+if /usr/bin/grep -Fiq 'shebe' "$HOMEBREW_MODULE"; then
+  echo "Shebe or its third-party tap remains declared in the Homebrew baseline" >&2
+  exit 1
+fi
+
+[[ "$(/usr/bin/grep -Fh '"thaw"' "${PROFILE_FILES[@]}" | \
+  /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')" -eq 1 ]] || {
+  echo "Thaw must be declared exactly once in the Homebrew baseline" >&2
+  exit 1
+}
+
 for unwanted_mas_app in \
-  Collections Paperparrot 'Remind Me Faster' Trace 'WiFi Signal' \
+  Barbee Collections HazeOver Paperparrot 'Remind Me Faster' Trace 'WiFi Signal' \
   'Microsoft Defender' OneDrive OneNote Conductor Deliveries Xcode; do
   if /usr/bin/grep -Fq "\"$unwanted_mas_app\" =" "${PROFILE_FILES[@]}"; then
     echo "unwanted Mac App Store app remains declared: $unwanted_mas_app" >&2

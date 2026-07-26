@@ -1,7 +1,10 @@
 { lib, pkgs, ... }:
 
 let
-  version = "0.1.26";
+  release = builtins.fromJSON (
+    builtins.readFile ./filen-menubar-release.json
+  );
+  version = release.version;
 
   # Upstream recommends this stable legacy release while its replacement is in
   # beta. nixpkgs builds it as a standalone Bun executable, avoiding the npm
@@ -14,7 +17,7 @@ let
 
     src = pkgs.fetchurl {
       url = "https://github.com/philippgerard/filen-menubar/releases/download/v${version}/Filen.Menubar_${version}_aarch64.dmg";
-      hash = "sha256-RdL58mRZSpaywSdtoHV0QDk7kx8RrpTm7fUKG65t3L4=";
+      inherit (release) hash;
     };
 
     nativeBuildInputs = [ pkgs.undmg ];
@@ -50,6 +53,11 @@ let
       "$@"
   '';
 in
+assert builtins.attrNames release == [ "hash" "version" ];
+assert builtins.isString release.version;
+assert builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+" release.version != null;
+assert builtins.isString release.hash;
+assert builtins.match "sha256-[A-Za-z0-9+/]{43}=" release.hash != null;
 {
   home.packages = [ filenMenubar ];
 

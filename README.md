@@ -96,7 +96,7 @@ scripts/rebuild build
 # Build and activate local changes
 scripts/rebuild switch
 
-# Intentionally update pinned Nix inputs, then build
+# Intentionally update pinned Nix inputs and Filen Menubar, then build
 scripts/update
 ```
 

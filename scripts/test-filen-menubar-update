@@ -1,0 +1,187 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+UPDATER="$REPO_ROOT/scripts/update-filen-menubar"
+UPDATE_SCRIPT="$REPO_ROOT/scripts/update"
+
+IFS= read -r updater_shebang <"$UPDATER"
+[[ "$updater_shebang" == '#!/bin/bash -p' ]] || {
+  echo "Filen Menubar updater does not use protected Bash startup" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match literal source-controlled helper paths.
+/usr/bin/grep -Fq 'source "$REPO_ROOT/scripts/trusted-path"' "$UPDATER"
+/usr/bin/grep -Fq 'mac_setup_harden_environment' "$UPDATER"
+/usr/bin/grep -Fq \
+  'https://api.github.com/repos/philippgerard/filen-menubar/releases/latest' \
+  "$UPDATER"
+# shellcheck disable=SC2016 # Match the literal delegated update command.
+/usr/bin/grep -Fq '"$REPO_ROOT/scripts/update-filen-menubar"' "$UPDATE_SCRIPT"
+if /usr/bin/grep -Eq \
+  '(^|[^/[:alnum:]_])(curl|mktemp)([[:space:]]|$)' "$UPDATER"; then
+  echo "Filen Menubar updater resolves a sensitive command through PATH" >&2
+  exit 1
+fi
+
+test_root="$(
+  /usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-filen-update-test.XXXXXX"
+)"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-filen-update-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fixture_repo="$test_root/repository"
+fixture_release_file="$fixture_repo/modules/home/filen-menubar-release.json"
+fixture_release_json="$test_root/release.json"
+fixture_asset="$test_root/filen-menubar.dmg"
+/bin/mkdir -p "$fixture_repo/modules/home" "$fixture_repo/scripts"
+/bin/cp \
+  "$REPO_ROOT/scripts/update-filen-menubar" \
+  "$REPO_ROOT/scripts/trusted-nix" \
+  "$REPO_ROOT/scripts/trusted-path" \
+  "$fixture_repo/scripts/"
+/bin/chmod 755 "$fixture_repo/scripts/update-filen-menubar"
+
+write_pinned_release() {
+  local version="$1"
+  local hash="$2"
+
+  /usr/bin/printf \
+    '{\n  "version": "%s",\n  "hash": "%s"\n}\n' \
+    "$version" "$hash" >"$fixture_release_file"
+}
+
+write_release_fixture() {
+  local version="$1"
+  local digest="$2"
+  local fixture_kind="${3:-valid}"
+  local asset_name="Filen.Menubar_${version}_aarch64.dmg"
+  local asset_url="https://github.com/philippgerard/filen-menubar/releases/download/v${version}/${asset_name}"
+  local assets_json
+
+  case "$fixture_kind" in
+    valid)
+      assets_json="$(
+        /usr/bin/printf \
+          '[{"name":"%s","state":"uploaded","browser_download_url":"%s","digest":"sha256:%s"}]' \
+          "$asset_name" "$asset_url" "$digest"
+      )"
+      ;;
+    duplicate)
+      assets_json="$(
+        /usr/bin/printf \
+          '[{"name":"%s","state":"uploaded","browser_download_url":"%s","digest":"sha256:%s"},{"name":"%s","state":"uploaded","browser_download_url":"%s","digest":"sha256:%s"}]' \
+          "$asset_name" "$asset_url" "$digest" \
+          "$asset_name" "$asset_url" "$digest"
+      )"
+      ;;
+    missing)
+      assets_json='[]'
+      ;;
+    *)
+      echo "unknown release fixture kind" >&2
+      return 2
+      ;;
+  esac
+
+  /usr/bin/printf \
+    '{"tag_name":"v%s","draft":false,"prerelease":false,"assets":%s}\n' \
+    "$version" "$assets_json" >"$fixture_release_json"
+}
+
+assert_update_fails() {
+  if "$fixture_repo/scripts/update-filen-menubar" \
+    --release-json "$fixture_release_json" \
+    --asset "$fixture_asset" >/dev/null 2>&1; then
+    echo "Filen Menubar updater accepted an unsafe release fixture" >&2
+    exit 1
+  fi
+}
+
+write_pinned_release \
+  "0.1.26" \
+  "sha256-RdL58mRZSpaywSdtoHV0QDk7kx8RrpTm7fUKG65t3L4="
+/usr/bin/printf 'signed Filen Menubar fixture\n' >"$fixture_asset"
+fixture_digest="$(
+  /usr/bin/shasum -a 256 "$fixture_asset" | /usr/bin/awk '{print $1}'
+)"
+expected_sri="$(
+  "$NIX_BIN" hash convert --hash-algo sha256 --to sri "$fixture_digest"
+)"
+
+write_release_fixture "0.1.28" "$fixture_digest"
+"$fixture_repo/scripts/update-filen-menubar" \
+  --release-json "$fixture_release_json" \
+  --asset "$fixture_asset" >/dev/null
+
+JQ_BIN="$(command -v jq)"
+# shellcheck disable=SC2016 # jq variables are expanded by jq.
+"$JQ_BIN" -e \
+  --arg hash "$expected_sri" \
+  '.version == "0.1.28" and .hash == $hash' \
+  "$fixture_release_file" >/dev/null
+
+/bin/cp "$fixture_release_file" "$test_root/release-before-idempotency.json"
+"$fixture_repo/scripts/update-filen-menubar" \
+  --release-json "$fixture_release_json" \
+  --asset "$fixture_asset" >/dev/null
+/usr/bin/cmp -s \
+  "$fixture_release_file" "$test_root/release-before-idempotency.json"
+
+/bin/cp "$fixture_release_file" "$test_root/release-before-failures.json"
+
+write_release_fixture "0.1.27" "$fixture_digest"
+assert_update_fails
+/usr/bin/cmp -s \
+  "$fixture_release_file" "$test_root/release-before-failures.json"
+
+write_release_fixture "0.1.29" "$fixture_digest" duplicate
+assert_update_fails
+/usr/bin/cmp -s \
+  "$fixture_release_file" "$test_root/release-before-failures.json"
+
+write_release_fixture "0.1.29" "$fixture_digest" missing
+assert_update_fails
+/usr/bin/cmp -s \
+  "$fixture_release_file" "$test_root/release-before-failures.json"
+
+wrong_digest="$(
+  /usr/bin/printf '0%.0s' {1..64}
+)"
+write_release_fixture "0.1.29" "$wrong_digest"
+assert_update_fails
+/usr/bin/cmp -s \
+  "$fixture_release_file" "$test_root/release-before-failures.json"
+
+write_release_fixture "0.1.28" "$wrong_digest"
+assert_update_fails
+/usr/bin/cmp -s \
+  "$fixture_release_file" "$test_root/release-before-failures.json"
+
+/usr/bin/printf \
+  '{"tag_name":"unsafe","draft":false,"prerelease":false,"assets":[]}\n' \
+  >"$fixture_release_json"
+assert_update_fails
+/usr/bin/cmp -s \
+  "$fixture_release_file" "$test_root/release-before-failures.json"
+
+if "$fixture_repo/scripts/update-filen-menubar" --unknown \
+  >/dev/null 2>&1; then
+  echo "Filen Menubar updater accepted an unknown argument" >&2
+  exit 1
+fi
+
+echo "Filen Menubar release update tests passed"

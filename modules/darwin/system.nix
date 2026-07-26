@@ -24,7 +24,7 @@
 
     # Global settings
     NSGlobalDomain = {
-      AppleShowAllExtensions = true;
+      AppleShowAllExtensions = false;
 
       # Keyboard
       KeyRepeat = 2;
