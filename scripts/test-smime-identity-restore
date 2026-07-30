@@ -1,0 +1,218 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+
+for command_name in jq mktemp openssl; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "required command not found: $command_name" >&2
+    exit 1
+  }
+done
+[[ -x /usr/bin/xcrun ]] || {
+  echo "required command not found: /usr/bin/xcrun" >&2
+  exit 1
+}
+
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-smime-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    -O "$test_root" && "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-smime-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+/bin/chmod 700 "$test_root"
+
+item_fixture="$test_root/item.json"
+jq -n '
+  {
+    id: "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+    title: "Mac Setup S-MIME personal-mail 2026-2028",
+    category: "LOGIN",
+    vault: {
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    tags: ["mac-setup", "smime"],
+    fields: [
+      {
+        id: "username",
+        label: "username",
+        type: "STRING",
+        value: "personal-mail"
+      },
+      {
+        id: "password",
+        label: "password",
+        type: "CONCEALED"
+      },
+      {
+        id: "period-field",
+        label: "certificate period",
+        type: "STRING",
+        value: "2026-2028"
+      },
+      {
+        id: "status-field",
+        label: "certificate status",
+        type: "STRING",
+        value: "current"
+      },
+      {
+        id: "test-field",
+        label: "last successful decryption test",
+        type: "STRING",
+        value: "2026-01-02"
+      }
+    ],
+    files: [
+      {
+        id: "cccccccccccccccccccccccccc",
+        name: "identity.p12"
+      }
+    ]
+  }
+' >"$item_fixture"
+/bin/chmod 600 "$item_fixture"
+
+expected_metadata=$'aaaaaaaaaaaaaaaaaaaaaaaaaa\tbbbbbbbbbbbbbbbbbbbbbbbbbb\tpassword\tcccccccccccccccccccccccccc\t2026-2028\tcurrent'
+actual_metadata="$(
+  "$REPO_ROOT/scripts/validate-smime-1password-item" \
+    --account-id personal-mail <"$item_fixture"
+)"
+[[ "$actual_metadata" == "$expected_metadata" ]] || {
+  echo "valid S/MIME Login item metadata was not preserved" >&2
+  exit 1
+}
+
+expect_item_rejected() {
+  local candidate="$1"
+
+  if "$REPO_ROOT/scripts/validate-smime-1password-item" \
+    --account-id personal-mail <"$candidate" >/dev/null 2>&1; then
+    echo "unsafe S/MIME Login item fixture was accepted" >&2
+    exit 1
+  fi
+}
+
+jq '.fields[] |= if .id == "password" then . + {value: "must-not-pass"} else . end' \
+  "$item_fixture" >"$test_root/revealed-password.json"
+expect_item_rejected "$test_root/revealed-password.json"
+
+jq '(.fields[] | select(.id == "username").value) = "other-mail"' \
+  "$item_fixture" >"$test_root/wrong-account.json"
+expect_item_rejected "$test_root/wrong-account.json"
+
+jq '.title = "Unrelated Item"' \
+  "$item_fixture" >"$test_root/wrong-title.json"
+expect_item_rejected "$test_root/wrong-title.json"
+
+jq '.files += [{id: "dddddddddddddddddddddddddd", name: "other.pfx"}]' \
+  "$item_fixture" >"$test_root/multiple-files.json"
+expect_item_rejected "$test_root/multiple-files.json"
+
+jq '.files[0].name = "public-only.cer"' \
+  "$item_fixture" >"$test_root/public-certificate.json"
+expect_item_rejected "$test_root/public-certificate.json"
+
+jq '.tags = ["smime"]' \
+  "$item_fixture" >"$test_root/missing-tag.json"
+expect_item_rejected "$test_root/missing-tag.json"
+
+native_source="$REPO_ROOT/scripts/native/smime-keychain-helper.m"
+native_helper="$test_root/smime-keychain-helper"
+module_cache="$test_root/clang-modules"
+/bin/mkdir -m 700 "$module_cache"
+/usr/bin/xcrun clang \
+  -fobjc-arc \
+  -fmodules-cache-path="$module_cache" \
+  -Werror \
+  -Wno-deprecated-declarations \
+  "$native_source" \
+  -framework Foundation \
+  -framework Security \
+  -o "$native_helper"
+
+pkcs12_passphrase='fixture-only-value'
+/usr/bin/openssl req \
+  -x509 \
+  -newkey rsa:2048 \
+  -nodes \
+  -sha256 \
+  -days 1 \
+  -subj '/CN=Fixture S-MIME' \
+  -keyout "$test_root/key.pem" \
+  -out "$test_root/cert.pem" \
+  >/dev/null 2>&1
+/usr/bin/openssl pkcs12 \
+  -export \
+  -inkey "$test_root/key.pem" \
+  -in "$test_root/cert.pem" \
+  -name fixture-identity \
+  -passout "pass:$pkcs12_passphrase" \
+  -out "$test_root/identity.p12"
+
+helper_state="$(
+  /usr/bin/printf %s "$pkcs12_passphrase" |
+    "$native_helper" check --pkcs12 "$test_root/identity.p12"
+)"
+[[ "$helper_state" == "missing" ]] || {
+  echo "synthetic identity unexpectedly exists in the login keychain" >&2
+  exit 1
+}
+
+wrong_password='incorrect-fixture-only-value'
+if /usr/bin/printf %s "$wrong_password" |
+  "$native_helper" check --pkcs12 "$test_root/identity.p12" \
+    >"$test_root/wrong-password.out" 2>"$test_root/wrong-password.err"; then
+  echo "native S/MIME helper accepted the wrong PKCS#12 password" >&2
+  exit 1
+fi
+if /usr/bin/grep -Fq "$wrong_password" "$test_root/wrong-password.err"; then
+  echo "native S/MIME helper exposed the supplied PKCS#12 password" >&2
+  exit 1
+fi
+
+restore_script="$REPO_ROOT/scripts/restore-smime-identities-from-1password"
+/usr/bin/grep -Fq \
+  'del(.fields[]? | select((.type // "") == "CONCEALED") | .value)' \
+  "$restore_script"
+# shellcheck disable=SC2016 # Match the literal password-reference pipeline.
+/usr/bin/grep -Fq \
+  'op read --force --no-newline "$password_reference" |' \
+  "$restore_script"
+# shellcheck disable=SC2016 # Match literal native-helper arguments.
+/usr/bin/grep -Fq \
+  '"$helper_binary" restore --pkcs12 "$identity_file"' \
+  "$restore_script"
+# shellcheck disable=SC2016 # Match the literal preflight assertion.
+preflight_line="$(
+  /usr/bin/grep -nF '[[ "$current_count" -eq 1 ]]' "$restore_script" |
+    /usr/bin/cut -d: -f1
+)"
+# shellcheck disable=SC2016 # Match the literal attachment-read command.
+attachment_read_line="$(
+  /usr/bin/grep -nF 'op read --force --out-file "$identity_file"' "$restore_script" |
+    /usr/bin/cut -d: -f1
+)"
+[[ "$preflight_line" -lt "$attachment_read_line" ]] || {
+  echo "S/MIME item-set validation must finish before private keys are read" >&2
+  exit 1
+}
+if /usr/bin/grep -Eq \
+  'security[[:space:]]+import.*[[:space:]]-P([[:space:]]|$)' \
+  "$restore_script" "$native_source"; then
+  echo "S/MIME restore still exposes a PKCS#12 password in process arguments" >&2
+  exit 1
+fi
+/usr/bin/grep -Fq 'kSecImportToMemoryOnly' "$native_source"
+/usr/bin/grep -Fq 'kSecImportExportKeychain' "$native_source"
+/usr/bin/grep -Fq 'kSecImportExportAccess' "$native_source"
+/usr/bin/grep -Fq 'SecItemCopyMatching' "$native_source"
+
+echo "S/MIME identity restore tests passed"

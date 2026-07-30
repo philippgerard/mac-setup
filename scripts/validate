@@ -25,12 +25,14 @@ if [[ "${#missing_validation_tools[@]}" -gt 0 ]]; then
     /usr/bin/env MAC_SETUP_VALIDATION_SHELL=1 "$REPO_ROOT/scripts/validate"
 fi
 
+shell_scripts=()
 for script in setup.sh scripts/*; do
   [[ -f "$script" ]] || continue
   bash -n "$script"
+  shell_scripts+=("$script")
 done
 
-shellcheck setup.sh scripts/*
+shellcheck "${shell_scripts[@]}"
 
 bash "$REPO_ROOT/scripts/check-index-worktree-parity"
 bash "$REPO_ROOT/scripts/check-public-safety"
@@ -55,6 +57,8 @@ bash "$REPO_ROOT/scripts/test-microsoft-native-passkey-readiness"
 bash "$REPO_ROOT/scripts/test-otty-config"
 bash "$REPO_ROOT/scripts/test-public-safety"
 bash "$REPO_ROOT/scripts/test-rosetta-activation"
+test -x "$REPO_ROOT/scripts/test-smime-identity-restore"
+bash "$REPO_ROOT/scripts/test-smime-identity-restore"
 bash "$REPO_ROOT/scripts/test-ssh-private-state"
 bash "$REPO_ROOT/scripts/test-validation-tool-bootstrap"
 bash "$REPO_ROOT/scripts/test-zed-config"

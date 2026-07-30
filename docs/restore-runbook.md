@@ -67,10 +67,12 @@ The default flow:
 3. opens and verifies the iCloud service restrictions profile;
 4. restores private and public Git identities;
 5. restores Mail/DAV metadata and configures `personal-mail`;
-6. restores legacy GPG keys and ownertrust;
-7. restores Filen Menubar configuration;
-8. authenticates the Filen CLI when needed; and
-9. launches Filen Menubar.
+6. checks the complete declared S/MIME identity history and imports only
+   missing identities from 1Password into the login keychain;
+7. restores legacy GPG keys and ownertrust;
+8. restores Filen Menubar configuration;
+9. authenticates the Filen CLI when needed; and
+10. launches Filen Menubar.
 
 The command is resumable. Rerun the same `--provision` command after an
 interrupted approval or sign-in, unless setup specifically asks for
@@ -86,6 +88,9 @@ macOS and vendors intentionally keep these steps interactive:
 - review and approve the iCloud restrictions profile and every selected
   IMAP/DAV profile in **System Settings > General > Device Management**;
 - enter the corresponding Mail and DAV application passwords;
+- approve 1Password or Keychain access if macOS requests it while missing
+  S/MIME identities are restored, then manually test current and historical
+  Mail decryption;
 - complete Microsoft native OAuth/MFA for a selected Exchange account, then
   type `configured` when setup asks for confirmation;
 - quit Filen Menubar from its menu if setup pauses before restoring its

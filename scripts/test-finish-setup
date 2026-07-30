@@ -21,6 +21,7 @@ trap cleanup EXIT
 
 default_plan="$($FINISH_SCRIPT --dry-run)"
 grep -Fq "Mail/DAV or Exchange account: personal-mail" <<<"$default_plan"
+grep -Fq "missing declared S/MIME identities" <<<"$default_plan"
 grep -Fq "iCloud service restrictions profile" <<<"$default_plan"
 grep -Fq "legacy GPG" <<<"$default_plan"
 grep -Fq "Filen config" <<<"$default_plan"
@@ -89,6 +90,8 @@ extract_finish_function() {
 }
 
 mail_type_function="$(extract_finish_function mail_account_type)"
+mail_smime_function="$(extract_finish_function mail_account_uses_smime)"
+restore_smime_function="$(extract_finish_function restore_smime_identity_history)"
 native_exchange_function="$(extract_finish_function configure_native_exchange_account)"
 passkey_readiness_function="$(extract_finish_function report_microsoft_native_passkey_broker_state)"
 open_accounts_function="$(extract_finish_function open_internet_accounts)"
@@ -123,8 +126,22 @@ grep -Fq 'validate_mail_profile "$account_id"' <<<"$mail_dispatch_function"
 grep -Fq 'exchange_oauth)' <<<"$mail_dispatch_function"
 # shellcheck disable=SC2016 # Match the literal selected-account dispatch.
 grep -Fq 'configure_native_exchange_account "$account_id"' <<<"$mail_dispatch_function"
+# shellcheck disable=SC2016 # Match the literal selected-account S/MIME restore.
+grep -Fq 'restore_smime_identity_history "$account_id"' <<<"$mail_dispatch_function"
 # shellcheck disable=SC2016 # Match the literal selected-account dispatch.
 grep -Fq 'configure_mail_account "$mail_account_id"' "$FINISH_SCRIPT"
+
+# S/MIME is an explicit private-metadata declaration. The selected account is
+# passed to the fail-closed 1Password-to-login-keychain restore helper.
+# shellcheck disable=SC2016 # Match literal jq source.
+grep -Fq '($matches[0].smime // false)' <<<"$mail_smime_function"
+grep -Fq 'restore-smime-identities-from-1password' <<<"$restore_smime_function"
+# shellcheck disable=SC2016 # Match the literal account argument.
+grep -Fq -- '--account-id "$account_id"' <<<"$restore_smime_function"
+if grep -Fq "smime-verified" "$FINISH_SCRIPT"; then
+  echo "finish-setup still requires a typed S/MIME confirmation" >&2
+  exit 1
+fi
 
 # Exercise both runtime dispatcher branches with controlled collaborators.
 # shellcheck disable=SC2329 # Mocks are invoked by the evaluated production function.
@@ -141,6 +158,9 @@ exchange_dispatch_trace="$(
     }
     ensure_profile() {
       printf 'install:%s\n' "$1"
+    }
+    restore_smime_identity_history() {
+      :
     }
     eval "$mail_dispatch_function"
     configure_mail_account work-mail
@@ -167,6 +187,9 @@ imap_dispatch_trace="$(
     }
     ensure_profile() {
       printf 'install:%s:%s\n' "$1" "$2"
+    }
+    restore_smime_identity_history() {
+      :
     }
     eval "$mail_dispatch_function"
     configure_mail_account personal-mail
@@ -330,6 +353,7 @@ if grep -Eq '^ONEPASSWORD_ACCOUNT_VALUE=.*\$\{?OP_ACCOUNT' "$FINISH_SCRIPT"; the
   echo "finish-setup still treats ambient OP_ACCOUNT as an explicit selection" >&2
   exit 1
 fi
+grep -Fq '.account_uuid' "$FINISH_SCRIPT"
 grep -Fq 'mac_setup_sanitize_1password_environment' "$FINISH_SCRIPT"
 grep -Fq '^/nix/store/[0-9a-z]{32}-filen$' "$FINISH_SCRIPT"
 grep -Fq 'validate_filen_app' "$FINISH_SCRIPT"

@@ -94,6 +94,20 @@ UUIDs only for a genuinely new profile or payload. Run
 `scripts/validate-mail-accounts-config` after every edit; it rejects unknown
 fields and credential-shaped keys.
 
+Set the optional account field `"smime": true` only when guided restore must
+restore that account's complete S/MIME identity history from its tagged
+1Password Login items. Omit the field for accounts that do not use S/MIME;
+`false` is rejected so the recovery requirement cannot be silently disabled by
+an ambiguous value. Identity files and import passwords stay in 1Password, not
+this password-free metadata.
+
+The restore discovers Login items tagged `mac-setup` and `smime` whose titles
+start with `Mac Setup S-MIME <account-id> `. Each item must contain the account
+ID in its standard username field, one distinct password, exactly one `.p12` or
+`.pfx` attachment, and the documented certificate-period, status, and
+decryption-test fields. This structure is the private recovery manifest; no
+item ID, certificate fingerprint, address, or secret is committed here.
+
 Back up the validated JSON as the `Mac Setup Mail Accounts` 1Password Document:
 
 ```bash
@@ -153,6 +167,10 @@ Keep a separate 1Password item that records:
 
 - Apple account and FileVault recovery routes;
 - code-signing certificate recovery;
+- every current and historical S/MIME PKCS#12/PFX identity, its import
+  password, covered email account, certificate period, and last decryption
+  test, using one linked 1Password Login item per identity so distinct file
+  passwords cannot be mixed up;
 - GPG document names and last verification date;
 - Mail account document name and last verification date;
 - Filen Menubar config document name and last verification date;

@@ -38,6 +38,12 @@ command -v jq >/dev/null 2>&1 || {
 jq -e '
   def exact_keys($allowed):
     ((keys | sort) == ($allowed | sort));
+  def account_keys($required):
+    if has("smime") then
+      exact_keys($required + ["smime"]) and (.smime == true)
+    else
+      exact_keys($required)
+    end;
   def nonempty_string:
     (type == "string") and (length > 0) and all(explode[]; . >= 32 and . != 127);
   def uuid:
@@ -85,7 +91,7 @@ jq -e '
     and (.carddav | dav_service);
   def imap_account:
     (if has("services") then
-      exact_keys([
+      account_keys([
         "description",
         "display_name",
         "email_address",
@@ -100,7 +106,7 @@ jq -e '
       ])
       and (.services | dav_services)
     else
-      exact_keys([
+      account_keys([
         "description",
         "display_name",
         "email_address",
@@ -123,7 +129,7 @@ jq -e '
     and (.outgoing | endpoint)
     and (.password_same_as_incoming == true);
   def exchange_account:
-    exact_keys([
+    account_keys([
       "description",
       "email_address",
       "id",

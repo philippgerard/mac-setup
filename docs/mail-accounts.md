@@ -28,6 +28,12 @@ Two account types are supported:
 - `exchange_oauth` opens Apple's native Microsoft Exchange Internet Accounts
   flow and never stores a password or OAuth token in a profile.
 
+An account that uses S/MIME must also declare `"smime": true` in the private
+Mail metadata. This is intentionally a boolean rather than certificate data:
+private keys, certificate fingerprints, 1Password item IDs, and PKCS#12
+passwords never belong in the public repository or in the password-free Mail
+configuration profile.
+
 ## Private metadata and backup
 
 Mail addresses, login names, server settings, account types, and stable profile
@@ -92,6 +98,71 @@ Each profile owns only its account bundle and can be installed or removed
 independently. Removing it also removes every Mail, Calendar, Reminders, and
 Contacts service managed by that profile. Do not remove a profile merely to
 troubleshoot one service.
+
+## S/MIME identity history
+
+S/MIME identities are separate from the generated Mail/DAV configuration
+profiles. Apple Mail discovers a personal certificate by matching its email
+address to an identity in the keychain. Import each `.p12` or `.pfx` identity
+into the **login** keychain, never the System keychain. A System-keychain
+private key can cause macOS to request administrator credentials whenever Mail
+decrypts a message.
+
+Keep the current identity and every historical private key that may have been
+used to encrypt retained mail. Expired or revoked certificates must not be
+used to sign new messages, but their private keys can still be necessary to
+decrypt older messages. Public `.cer`, `.crt`, `.pem`, or `.p7b` files alone
+are not substitutes for the corresponding private key.
+
+Use one 1Password **Login** item per identity so a file can never be paired
+with another identity's password:
+
+- title: `Mac Setup S-MIME <account-id> <certificate-period>`;
+- username: the exact private Mail account ID;
+- password: that exact PKCS#12/PFX file's import password;
+- attachment: exactly one matching `.p12` or `.pfx` identity file;
+- fields: certificate period, certificate status (`current`, `historical`, or
+  `revoked`), and last successful decryption-test date or `pending`; and
+- tags: `mac-setup` and `smime`.
+
+For every account with `"smime": true`, guided setup:
+
+1. finds the matching tagged Login items in the explicitly selected 1Password
+   account and optional vault;
+2. rejects duplicates, malformed fields, missing passwords, public-only
+   certificate files, more than one attachment, and any set without exactly
+   one current identity;
+3. downloads each attachment into a private temporary directory;
+4. streams that item's password directly from 1Password through an anonymous
+   pipe to a native Security-framework helper;
+5. decodes the PKCS#12 data in memory, matches the certificate digest against
+   certificate/private-key identities in the **login** keychain, and skips an
+   identity already present even when its certificate is expired or revoked;
+6. imports only missing identities into the login keychain with access scoped
+   to Mail; and
+7. removes every temporary attachment and compiled helper on exit.
+
+The PKCS#12 password is never a command argument, environment variable,
+terminal prompt, log value, or file. Setup never targets the System keychain
+and never uses `security import -P`.
+
+Do not replace separate items with one shared-password archive: historical
+files can have different import passwords. Do not attach public-only
+certificate files as identity backups. The standardized titles, tags, and
+fields form the private recovery manifest without placing item IDs,
+fingerprints, names, or addresses in this repository.
+
+Automatic presence detection proves that the certificate and associated
+private key exist in the login keychain. It cannot prove certificate trust,
+Mail signing behavior, or decryption of retained messages. After restore,
+manually confirm the current certificate is valid, send a newly encrypted
+message, and decrypt a retained message from every historical certificate
+period. A fresh Mac may ask for 1Password biometric approval or a macOS
+Keychain authorization, but no PKCS#12 password needs to be typed.
+
+Do not embed a PKCS#12 payload in the generated profile: Apple documents that
+a manually installed profile is obfuscated, not encrypted, so its identity and
+any embedded password can be extracted.
 
 To regenerate the local files without opening them:
 

@@ -54,6 +54,7 @@ jq -n \
         },
         display_name: "Example Person",
         email_address: $personal_address,
+        smime: true,
         password_same_as_incoming: true,
         incoming: {
           authentication: "password",
@@ -205,6 +206,7 @@ plutil -convert json -o - "$profile_dir/personal-mail.mobileconfig" | jq -e \
   and ($profile.PayloadContent[0].PayloadUUID == "00000000-0000-4000-8000-000000000002")
   and ($profile.PayloadContent[0].EmailAddress == $own_address)
   and ($profile.PayloadContent[0].OutgoingPasswordSameAsIncomingPassword == true)
+  and ((tostring | contains("SMIME")) | not)
   and ($profile.PayloadContent[1].PayloadType == "com.apple.caldav.account")
   and ($profile.PayloadContent[1].PayloadIdentifier == "org.example.mac-setup.mail.personal.caldav")
   and ($profile.PayloadContent[1].PayloadUUID == "00000000-0000-4000-8000-000000000005")
@@ -353,6 +355,12 @@ expect_rejected "$test_dir/bad-dav-port.json"
 
 jq '.accounts[0].incoming.password = "not-a-real-secret"' "$valid_config" >"$test_dir/embedded-secret.json"
 expect_rejected "$test_dir/embedded-secret.json"
+
+jq '.accounts[0].smime = false' "$valid_config" >"$test_dir/disabled-smime.json"
+expect_rejected "$test_dir/disabled-smime.json"
+
+jq '.accounts[0].smime = "yes"' "$valid_config" >"$test_dir/nonboolean-smime.json"
+expect_rejected "$test_dir/nonboolean-smime.json"
 
 jq '.accounts[0].services.caldav.password = "not-a-real-secret"' "$valid_config" >"$test_dir/embedded-dav-secret.json"
 expect_rejected "$test_dir/embedded-dav-secret.json"

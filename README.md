@@ -44,8 +44,10 @@ After the build succeeds and its changes look right:
 ```
 
 Follow the guided prompts. This activates the system, connects 1Password,
-restores Git identity, personal Mail and configured DAV services, legacy GPG
-keys, and Filen state, and opens the macOS profiles that require approval.
+restores Git identity, personal Mail and configured DAV services, checks and
+restores any missing declared S/MIME identities in the login keychain, restores
+legacy GPG keys and Filen state, and opens the macOS profiles that require
+approval.
 
 The flow is resumable. If macOS asks for App Management permission, enable the
 terminal in **System Settings > Privacy & Security > App Management**, quit and

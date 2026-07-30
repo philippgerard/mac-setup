@@ -45,6 +45,7 @@ Container and Docker volumes on this Mac are intentionally excluded.
 - [ ] `scripts/backup-gpg-to-1password` completes and verifies every local secret key plus ownertrust.
 - [ ] Required IMAP and CalDAV/CardDAV app passwords are stored in separate 1Password Login items; Microsoft 365 browser sign-in with the registered YubiKey works; any Company Portal, MDM, Enterprise SSO, or PIV/certificate prerequisites used by Apple Internet Accounts are documented by the organization; and the desired account selection for each Mac is known.
 - [ ] Code-signing identities/private keys are independently recoverable.
+- [ ] Every current and historical S/MIME PKCS#12/PFX identity is attached to its own correctly tagged 1Password Login item with the standard account ID, period, status, test-date fields, and that file's distinct import password; the automated restore reports every identity present, each current certificate is valid, and retained encrypted mail from every certificate period decrypts successfully using identities in the login keychain.
 - [ ] Apple account, FileVault recovery, and important recovery codes are accessible.
 - [ ] Private SSH hosts and repository manifests are stored outside the public repository.
 

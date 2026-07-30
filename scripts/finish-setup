@@ -183,6 +183,7 @@ print_plan() {
   [[ "$SKIP_GIT" -eq 1 ]] || echo "  - restore private and public Git identities from 1Password"
   if [[ "$SKIP_MAIL" -eq 0 ]]; then
     echo "  - restore password-free Mail/DAV metadata from 1Password"
+    echo "  - restore any missing declared S/MIME identities into the login keychain"
     for mail_id in "${MAIL_ACCOUNT_IDS[@]}"; do
       [[ "$mail_id" == "$MAIL_ACCOUNT_SENTINEL" ]] && continue
       echo "  - configure selected Mail/DAV or Exchange account: $mail_id"
@@ -190,6 +191,27 @@ print_plan() {
   fi
   [[ "$SKIP_GPG" -eq 1 ]] || echo "  - restore legacy GPG keys and ownertrust from 1Password"
   [[ "$SKIP_FILEN" -eq 1 ]] || echo "  - restore Filen config, authenticate the CLI, and launch Filen Menubar"
+}
+
+mail_account_uses_smime() {
+  local account_id="$1"
+
+  jq -er --arg id "$account_id" '
+    [.accounts[] | select(.id == $id)] as $matches
+    | if ($matches | length) == 1 then
+        ($matches[0].smime // false)
+      else
+        error("selected Mail account ID is not present exactly once")
+      end
+  ' "$CONFIG_FILE"
+}
+
+restore_smime_identity_history() {
+  local account_id="$1"
+
+  [[ "$(mail_account_uses_smime "$account_id")" == "true" ]] || return
+  "$REPO_ROOT/scripts/restore-smime-identities-from-1password" \
+    --account-id "$account_id"
 }
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -271,12 +293,12 @@ choose_1password_account() {
   }
 
   if [[ "$account_count" -eq 1 ]]; then
-    ONEPASSWORD_ACCOUNT_VALUE="$(jq -er '.[0] | [.shorthand, .id, .url] | map(select(type == "string" and length > 0)) | .[0]' <<<"$account_json")"
+    ONEPASSWORD_ACCOUNT_VALUE="$(jq -er '.[0] | [.shorthand, .id, .account_uuid, .url] | map(select(type == "string" and length > 0)) | .[0]' <<<"$account_json")"
   else
     echo "Choose the 1Password account used by mac-setup:" >/dev/tty
     jq -r '
       to_entries[]
-      | (.value | [.shorthand, .url, .id] | map(select(type == "string" and length > 0)) | .[0]) as $label
+      | (.value | [.shorthand, .url, .account_uuid, .id] | map(select(type == "string" and length > 0)) | .[0]) as $label
       | "  \(.key + 1). \($label)"
     ' <<<"$account_json" >/dev/tty
     printf 'Account number: ' >/dev/tty
@@ -286,7 +308,7 @@ choose_1password_account() {
       exit 1
     }
     selected_index=$((account_index - 1))
-    ONEPASSWORD_ACCOUNT_VALUE="$(jq -er --argjson index "$selected_index" '.[ $index ] | [.shorthand, .id, .url] | map(select(type == "string" and length > 0)) | .[0]' <<<"$account_json")"
+    ONEPASSWORD_ACCOUNT_VALUE="$(jq -er --argjson index "$selected_index" '.[ $index ] | [.shorthand, .id, .account_uuid, .url] | map(select(type == "string" and length > 0)) | .[0]' <<<"$account_json")"
   fi
 
   [[ "$ONEPASSWORD_ACCOUNT_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
@@ -558,6 +580,7 @@ configure_mail_account() {
       exit 1
       ;;
   esac
+  restore_smime_identity_history "$account_id"
 }
 
 print_plan

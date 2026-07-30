@@ -152,9 +152,14 @@ check from closing the parent shell.
 
 ## Manual checks
 
-The automated block cannot prove that remote services are correct. Verify:
+The automated block confirms declared S/MIME certificate/private-key pairs are
+present in the login keychain, but cannot prove certificate trust or Mail
+decryption. Verify:
 
 - every installed Mail account can send and receive;
+- every S/MIME identity is in the login keychain, the current certificate is
+  valid, and retained encrypted mail from every historical certificate period
+  decrypts successfully;
 - each selected CalDAV/CardDAV account exposes the intended calendars,
   reminders, and contacts;
 - each selected Microsoft account completed native OAuth with the required MFA
