@@ -1,6 +1,25 @@
 { lib, ... }:
 
 {
+  # A custom vault is not part of 1Password's implicit SSH-agent allowlist.
+  # Keep the setup signing key first, then retain the built-in vault behavior
+  # across personal and work accounts without embedding any private account or
+  # item identifiers.
+  xdg.configFile."1Password/ssh/agent.toml".text = ''
+    [[ssh-keys]]
+    item = "Mac Setup Git Signing"
+    vault = "Mac Setup"
+
+    [[ssh-keys]]
+    vault = "Personal"
+
+    [[ssh-keys]]
+    vault = "Private"
+
+    [[ssh-keys]]
+    vault = "Employee"
+  '';
+
   home.file.".ssh/config".text = ''
     Include ~/.ssh/config.d/*
     Include ~/.orbstack/ssh/config

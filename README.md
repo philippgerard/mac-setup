@@ -4,8 +4,8 @@ My repeatable Apple Silicon macOS setup, built with Determinate Nix,
 nix-darwin, Home Manager, Homebrew, and the Mac App Store.
 
 The repository contains the public machine configuration. Private identity,
-account metadata, keys, and sync settings are restored from 1Password and never
-stored in Git.
+account metadata, keys, and sync settings are restored from the dedicated
+`Mac Setup` vault in 1Password and never stored in Git.
 
 ## Set up a fresh Mac
 

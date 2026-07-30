@@ -128,7 +128,8 @@ with another identity's password:
 For every account with `"smime": true`, guided setup:
 
 1. finds the matching tagged Login items in the explicitly selected 1Password
-   account and optional vault;
+   account and the `Mac Setup` vault, unless that vault is intentionally
+   overridden;
 2. rejects duplicates, malformed fields, missing passwords, public-only
    certificate files, more than one attachment, and any set without exactly
    one current identity;

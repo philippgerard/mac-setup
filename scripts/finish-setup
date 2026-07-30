@@ -23,7 +23,7 @@ PROFILE_STATE_SCRIPT="$REPO_ROOT/scripts/configuration-profile-state"
 MICROSOFT_PASSKEY_READINESS_SCRIPT="$REPO_ROOT/scripts/microsoft-native-passkey-readiness"
 INTERNET_ACCOUNTS_URL="x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension"
 ONEPASSWORD_ACCOUNT_VALUE="${MAC_SETUP_1PASSWORD_ACCOUNT:-}"
-VAULT_VALUE="${MAC_SETUP_1PASSWORD_VAULT:-}"
+VAULT_VALUE="${MAC_SETUP_1PASSWORD_VAULT:-$MAC_SETUP_1PASSWORD_VAULT_DEFAULT}"
 ONEPASSWORD_SSH_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 FILEN_BIN="$HOME/.local/bin/filen"
 FILEN_APP="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
@@ -62,7 +62,7 @@ and Filen configuration, while guiding the required Apple profile approvals.
 
 Options:
   --op-account <account>  Select a 1Password account ID or shorthand.
-  --vault <vault>         Select the 1Password vault used by restore helpers.
+  --vault <vault>         Override the default Mac Setup 1Password vault.
   --mail-account <id>     Select a Mail/DAV or Exchange account; repeat for
                           more than one. The default is personal-mail.
   --mail-profile <id>     Compatibility alias for --mail-account.

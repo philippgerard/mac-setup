@@ -26,7 +26,8 @@ wipe gate.
 3. Sign in to the Mac App Store. Homebrew Bundle cannot install declared MAS
    applications without that session.
 4. Have the 1Password recovery material available. The default restore expects
-   the Git identity, Mail Accounts, GPG, and Filen Menubar items described in
+   the dedicated `Mac Setup` vault to contain the Git identity, Mail Accounts,
+   GPG, Filen Menubar, signing-key, and S/MIME items described in
    [Private state](private-state.md).
 5. Use Terminal for the initial bootstrap.
 
@@ -63,7 +64,8 @@ The default flow:
 
 1. selects the configured 1Password account, prompting when there is more than
    one;
-2. ensures CLI integration and the SSH agent are enabled;
+2. selects the dedicated `Mac Setup` vault and ensures CLI integration and the
+   SSH agent are enabled;
 3. opens and verifies the iCloud service restrictions profile;
 4. restores private and public Git identities;
 5. restores Mail/DAV metadata and configures `personal-mail`;
@@ -125,7 +127,8 @@ Repeat it for every account wanted:
 
 ### Select a 1Password account or vault
 
-Options after `--` are passed to the private restore:
+The private restore uses the `Mac Setup` vault by default. Options after `--`
+can select a 1Password account or intentionally override that vault:
 
 ```bash
 ~/.config/mac-setup/setup.sh --provision -- \
@@ -133,8 +136,8 @@ Options after `--` are passed to the private restore:
 ```
 
 The equivalent environment variables are `MAC_SETUP_1PASSWORD_ACCOUNT` and
-`MAC_SETUP_1PASSWORD_VAULT`. Explicit selection is not inferred from ambient
-`OP_*` variables.
+`MAC_SETUP_1PASSWORD_VAULT`. The override is not inferred from ambient `OP_*`
+variables, and no private vault or item ID belongs in this repository.
 
 ### Activate only the public base
 

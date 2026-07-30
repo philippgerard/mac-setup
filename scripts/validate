@@ -39,6 +39,7 @@ bash "$REPO_ROOT/scripts/check-public-safety"
 bash "$REPO_ROOT/scripts/check-history-safety" HEAD
 bash "$REPO_ROOT/scripts/test-1password-document-lookup"
 bash "$REPO_ROOT/scripts/test-1password-environment"
+bash "$REPO_ROOT/scripts/test-1password-ssh-agent-config"
 bash "$REPO_ROOT/scripts/test-app-inventory"
 bash "$REPO_ROOT/scripts/test-bootstrap-checkout"
 bash "$REPO_ROOT/scripts/test-configuration-profile-state"

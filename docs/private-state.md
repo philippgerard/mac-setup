@@ -13,6 +13,12 @@ snapshot for both build and activation.
 
 ## 1Password items
 
+Keep every setup-owned item in a dedicated personal-account vault named
+`Mac Setup` and tag it `mac-setup`. The public repository knows only this
+generic vault name; its private vault ID, item IDs, account ID, and contents
+must never be committed. All backup and restore helpers use `Mac Setup` by
+default.
+
 ### Mac Setup Git Identity
 
 Create a Secure Note or Login item with the unique title `Mac Setup Git Identity` and these fields:
@@ -35,9 +41,10 @@ Create a Secure Note or Login item with the unique title `Mac Setup Git Identity
 All files are mode `0600`, local only, and intentionally absent from Nix and Git. Conditional Git includes prevent the private default identity from being used for this public repository.
 
 By default, the guided restore asks which configured 1Password account to use
-and lets that account select its default vault. Use `--op-account` and `--vault`
-with `scripts/finish-setup`, or set `MAC_SETUP_1PASSWORD_ACCOUNT` and
-`MAC_SETUP_1PASSWORD_VAULT`, when either must be selected noninteractively. Set
+and reads the `Mac Setup` vault in that account. Use `--op-account` and
+`--vault` with `scripts/finish-setup`, or set
+`MAC_SETUP_1PASSWORD_ACCOUNT` and `MAC_SETUP_1PASSWORD_VAULT`, when either must
+be selected noninteractively or a different vault is intentionally used. Set
 `MAC_SETUP_GIT_IDENTITY_ITEM` to select another item title, or
 `MAC_SETUP_GIT_IDENTITY_REF` when an explicit `op://Vault/Item` reference is
 preferable. Every private helper clears inherited `OP_*` session, backend,
@@ -55,13 +62,19 @@ MAC_SETUP_GIT_IDENTITY_REF='op://Vault/Item' scripts/configure-git-identity
 
 Git commits and tags use SSH signing through the 1Password application's
 `op-ssh-sign` program. OpenPGP is retained only for legacy keys and decryption,
-not for Git signing.
+not for Git signing. The signing key is an SSH Key item titled
+`Mac Setup Git Signing` in the `Mac Setup` vault. Because custom vaults are not
+part of the 1Password SSH agent's implicit allowlist, Home Manager installs a
+generic agent configuration that offers this key first and then preserves the
+built-in Personal, Private, and Employee vault behavior. The configuration
+contains no account, vault, or item ID.
 
-Backup upserts first list Documents in the selected account and optional vault,
-then require the configured title to be absent or match exactly one item. A
-1Password lookup error or duplicate title aborts the backup instead of creating
-another ambiguous recovery item. Set `MAC_SETUP_1PASSWORD_VAULT` to narrow the
-lookup when needed, and resolve duplicate titles before retrying.
+Backup upserts first list Documents in the selected account and `Mac Setup`
+vault, then require the configured title to be absent or match exactly one
+item. A 1Password lookup error or duplicate title aborts the backup instead of
+creating another ambiguous recovery item. Use
+`MAC_SETUP_1PASSWORD_VAULT` only for an intentional override, and resolve
+duplicate titles before retrying.
 
 ### GPG documents
 
@@ -115,8 +128,10 @@ scripts/backup-mail-accounts-to-1password
 ```
 
 The helper upserts the document and verifies its SHA-256 digest after download.
-Keep email and DAV app passwords in separate 1Password Login items rather than
-adding them to the metadata document.
+Keep email and DAV app passwords in separate 1Password Login items in the same
+`Mac Setup` vault rather than adding them to the metadata document. Tag those
+dedicated items `mac-setup` and `mail-credentials`; do not move a general
+website login merely because it happens to use the same email address.
 
 Restore the metadata and regenerate the derived, password-free profiles with:
 
@@ -163,7 +178,7 @@ restricts the local state directory and saved-login file to user-only access.
 
 ### Private recovery manifest
 
-Keep a separate 1Password item that records:
+Keep a separate `mac-setup`-tagged item in the `Mac Setup` vault that records:
 
 - Apple account and FileVault recovery routes;
 - code-signing certificate recovery;
@@ -198,5 +213,7 @@ host blocks into separate files below `~/.ssh/config.d/`.
 Do not copy live Zed, AI-agent, browser, or package-manager settings wholesale.
 Live files can contain access tokens even when most of the file is harmless.
 The public Zed module only seeds non-secret defaults when no settings file
-exists; its live user-owned file is preserved locally. Credentials are restored
-through 1Password or the application's supported sign-in flow.
+exists; its live user-owned file is preserved locally. Setup-specific
+credentials belong in the `Mac Setup` vault; ordinary website and application
+logins remain in their normal vault. Credentials are restored through
+1Password or the application's supported sign-in flow.
