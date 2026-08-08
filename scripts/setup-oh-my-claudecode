@@ -1,0 +1,343 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+if [[ $# -ne 4 ]]; then
+  echo "usage: scripts/setup-oh-my-claudecode OMC NODE PACKAGE_ROOT JQ" >&2
+  exit 2
+fi
+
+omc_binary="$1"
+node_binary="$2"
+package_root="$3"
+jq_binary="$4"
+
+validate_executable() {
+  local label="$1"
+  local executable="$2"
+
+  [[ "$executable" == /* && "$executable" != *[[:cntrl:]]* && \
+    -f "$executable" && -x "$executable" ]] || {
+    echo "$label must be an executable absolute file path" >&2
+    exit 1
+  }
+}
+
+validate_executable "OMC executable" "$omc_binary"
+validate_executable "Node executable" "$node_binary"
+validate_executable "jq executable" "$jq_binary"
+[[ "$package_root" == /* && "$package_root" != *[[:cntrl:]]* && \
+  -d "$package_root" && -f "$package_root/dist/hud/index.js" ]] || {
+  echo "OMC package root must contain the built HUD runtime" >&2
+  exit 1
+}
+
+configured_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+# shellcheck disable=SC2088 # Match upstream's literal ~/ config prefix.
+tilde_prefix='~/'
+case "$configured_dir" in
+  "~") claude_config_dir="$HOME" ;;
+  "$tilde_prefix"*) claude_config_dir="$HOME/${configured_dir#"$tilde_prefix"}" ;;
+  /*) claude_config_dir="${configured_dir%/}" ;;
+  *)
+    echo "CLAUDE_CONFIG_DIR must be absolute or start with ~/" >&2
+    exit 1
+    ;;
+esac
+
+[[ -n "$claude_config_dir" && "$claude_config_dir" != "/" ]] || {
+  echo "refusing to use the filesystem root as Claude's config directory" >&2
+  exit 1
+}
+
+version_file="$claude_config_dir/.omc-version.json"
+omc_config_file="$claude_config_dir/.omc-config.json"
+claude_md_file="$claude_config_dir/CLAUDE.md"
+agents_dir="$claude_config_dir/agents"
+managed_setup_skill="$claude_config_dir/skills/omc-setup/.omc-managed"
+settings_file="$claude_config_dir/settings.json"
+
+json_string() {
+  local file="$1"
+  local key="$2"
+
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  /usr/bin/plutil -extract "$key" raw -o - "$file" 2>/dev/null
+}
+
+has_omc_block() {
+  local file="$1"
+
+  [[ -f "$file" && ! -L "$file" ]] && \
+    /usr/bin/grep -Fqx '<!-- OMC:START -->' "$file" && \
+    /usr/bin/grep -Eq '^<!-- OMC:VERSION:[^[:space:]]+ -->$' "$file" && \
+    /usr/bin/grep -Fqx '<!-- OMC:END -->' "$file"
+}
+
+write_omc_node_config() {
+  local current_node
+  local current_package_root
+  local current_runtime_node
+  local temp_file
+
+  current_node="$(json_string "$omc_config_file" nodeBinary || true)"
+  current_runtime_node="$(
+    json_string "$omc_config_file" macSetupNixRuntime.nodeBinary || true
+  )"
+  current_package_root="$(
+    json_string "$omc_config_file" macSetupNixRuntime.packageRoot || true
+  )"
+  if [[ "$current_node" == "$node_binary" && \
+    "$current_runtime_node" == "$node_binary" && \
+    "$current_package_root" == "$package_root" ]]; then
+    return 0
+  fi
+
+  if [[ -e "$omc_config_file" || -L "$omc_config_file" ]]; then
+    [[ -f "$omc_config_file" && ! -L "$omc_config_file" && \
+      -O "$omc_config_file" ]] || {
+      echo "OMC runtime config requires manual review" >&2
+      return 1
+    }
+  fi
+
+  temp_file="$(/usr/bin/mktemp "$claude_config_dir/.omc-config.json.tmp.XXXXXX")"
+  if [[ -f "$omc_config_file" ]]; then
+    # shellcheck disable=SC2016 # jq expands $node.
+    if ! "$jq_binary" --arg node "$node_binary" \
+      --arg package_root "$package_root" \
+      '. + {
+        nodeBinary: $node,
+        macSetupNixRuntime: {
+          nodeBinary: $node,
+          packageRoot: $package_root
+        }
+      }' "$omc_config_file" >"$temp_file"; then
+      /bin/rm -f -- "$temp_file"
+      return 1
+    fi
+  else
+    # shellcheck disable=SC2016 # jq expands $node.
+    if ! "$jq_binary" -n --arg node "$node_binary" \
+      --arg package_root "$package_root" \
+      '{
+        nodeBinary: $node,
+        macSetupNixRuntime: {
+          nodeBinary: $node,
+          packageRoot: $package_root
+        }
+      }' >"$temp_file"; then
+      /bin/rm -f -- "$temp_file"
+      return 1
+    fi
+  fi
+  /bin/chmod 0600 "$temp_file"
+  /bin/mv "$temp_file" "$omc_config_file"
+}
+
+write_omc_runtime_settings() {
+  local previous_node="$1"
+  local previous_package_root="$2"
+  local temp_file
+
+  [[ -f "$settings_file" && ! -L "$settings_file" && -O "$settings_file" ]] || {
+    echo "OMC settings require manual review" >&2
+    return 1
+  }
+
+  temp_file="$(/usr/bin/mktemp "$claude_config_dir/settings.json.tmp.XXXXXX")"
+  # shellcheck disable=SC2016 # jq expands its named --arg values.
+  if ! "$jq_binary" \
+    --arg node "$node_binary" \
+    --arg hooks_dir "$claude_config_dir/hooks" \
+    --arg package_root "$package_root" \
+    --arg previous_node "$previous_node" \
+    --arg previous_package_root "$previous_package_root" \
+    --arg hud_cache "$claude_config_dir/hud/omc-hud-cache.sh" \
+    --arg hud_script "$claude_config_dir/hud/omc-hud.mjs" '
+      def omc_hook_scripts:
+        [
+          "keyword-detector.mjs",
+          "session-start.mjs",
+          "pre-tool-use.mjs",
+          "post-tool-use.mjs",
+          "post-tool-use-failure.mjs",
+          "persistent-mode.mjs",
+          "code-simplifier.mjs"
+        ];
+      def upstream_hook_command($script):
+        "node \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/" + $script + "\"";
+      def managed_hook_command($runtime; $script):
+        (($runtime | @sh) + " " + (($hooks_dir + "/" + $script) | @sh));
+      def managed_status_command($root):
+        "OMC_PLUGIN_ROOT=" + ($root | @sh)
+        + " /bin/sh " + ($hud_cache | @sh)
+        + " " + ($hud_script | @sh);
+      def upstream_status_command:
+        "sh ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hud/omc-hud-cache.sh "
+        + "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hud/omc-hud.mjs";
+      def rewrite_omc_hook:
+        if type == "object"
+          and .type == "command"
+          and ((.command? | type) == "string")
+        then
+          .command as $command
+          | ([
+              omc_hook_scripts[] as $script
+              | select(
+                  $command == upstream_hook_command($script)
+                  or $command == managed_hook_command($node; $script)
+                  or ($previous_node != ""
+                    and $command == managed_hook_command($previous_node; $script))
+                )
+              | $script
+            ][0] // null) as $script
+          | if $script == null then .
+            else .command = managed_hook_command($node; $script)
+            end
+        else . end;
+
+      if (.hooks | type) == "object" then
+        .hooks |= with_entries(
+          if (.value | type) == "array" then
+            .value |= map(
+              if (.hooks | type) == "array" then
+                .hooks |= map(rewrite_omc_hook)
+              else . end
+            )
+          else . end
+        )
+      else . end
+      | if (.statusLine | type) == "object"
+          and .statusLine.type == "command"
+          and ((.statusLine.command? | type) == "string")
+          and (
+            .statusLine.command == upstream_status_command
+            or .statusLine.command == managed_status_command($package_root)
+            or ($previous_package_root != ""
+              and .statusLine.command
+                == managed_status_command($previous_package_root))
+          )
+        then
+          .statusLine.command = managed_status_command($package_root)
+        else . end
+    ' "$settings_file" >"$temp_file"; then
+    /bin/rm -f -- "$temp_file"
+    return 1
+  fi
+
+  if /usr/bin/cmp -s "$settings_file" "$temp_file"; then
+    /bin/rm -f -- "$temp_file"
+    return 0
+  fi
+  /bin/chmod 0600 "$temp_file"
+  /bin/mv "$temp_file" "$settings_file"
+}
+
+reconcile_npm_runtime() {
+  local previous_node
+  local previous_package_root
+
+  previous_node="$(
+    json_string "$omc_config_file" macSetupNixRuntime.nodeBinary || true
+  )"
+  if [[ -z "$previous_node" ]]; then
+    previous_node="$(json_string "$omc_config_file" nodeBinary || true)"
+  fi
+  previous_package_root="$(
+    json_string "$omc_config_file" macSetupNixRuntime.packageRoot || true
+  )"
+  write_omc_runtime_settings "$previous_node" "$previous_package_root"
+  write_omc_node_config
+}
+
+has_runtime_payload() {
+  local runtime_file
+
+  for runtime_file in \
+    "$settings_file" \
+    "$claude_config_dir/hooks/code-simplifier.mjs" \
+    "$claude_config_dir/hooks/find-node.sh" \
+    "$claude_config_dir/hooks/keyword-detector.mjs" \
+    "$claude_config_dir/hooks/lib/atomic-write.mjs" \
+    "$claude_config_dir/hooks/lib/bounded-git-timeout.mjs" \
+    "$claude_config_dir/hooks/lib/config-dir.mjs" \
+    "$claude_config_dir/hooks/lib/config-dir.sh" \
+    "$claude_config_dir/hooks/lib/model-routing-override-message.mjs" \
+    "$claude_config_dir/hooks/lib/state-root.mjs" \
+    "$claude_config_dir/hooks/lib/stdin.mjs" \
+    "$claude_config_dir/hooks/lib/workflow-profile-runtime.mjs" \
+    "$claude_config_dir/hooks/lib/workflow-stage-prompts.mjs" \
+    "$claude_config_dir/hooks/persistent-mode.mjs" \
+    "$claude_config_dir/hooks/post-tool-use-failure.mjs" \
+    "$claude_config_dir/hooks/post-tool-use.mjs" \
+    "$claude_config_dir/hooks/pre-tool-use.mjs" \
+    "$claude_config_dir/hooks/session-start.mjs" \
+    "$claude_config_dir/hud/find-node.sh" \
+    "$claude_config_dir/hud/lib/config-dir.mjs" \
+    "$claude_config_dir/hud/lib/config-dir.sh" \
+    "$claude_config_dir/hud/omc-hud-cache.sh" \
+    "$claude_config_dir/hud/omc-hud.mjs"; do
+    [[ -f "$runtime_file" && ! -L "$runtime_file" && \
+      -O "$runtime_file" ]] || return 1
+  done
+}
+
+has_npm_installation() {
+  local install_method
+  local installed_version
+
+  install_method="$(json_string "$version_file" installMethod || true)"
+  installed_version="$(json_string "$version_file" version || true)"
+  [[ "$install_method" == "npm" && -n "$installed_version" ]] && \
+    has_omc_block "$claude_md_file" && \
+    [[ -d "$agents_dir" && ! -L "$agents_dir" ]] && \
+    [[ -f "$managed_setup_skill" && ! -L "$managed_setup_skill" ]] && \
+    has_runtime_payload
+}
+
+# The interactive setup wizard records setupCompleted instead. Accept that
+# official marker too, including installations created by older OMC releases.
+setup_completed="$(json_string "$omc_config_file" setupCompleted || true)"
+
+# The npm setup command writes version metadata after installing its standalone
+# agents and skills. Require the complete witness so a partial setup is not
+# mistaken for a successful one.
+if [[ -n "$setup_completed" ]]; then
+  exit 0
+fi
+if has_npm_installation; then
+  reconcile_npm_runtime
+  exit 0
+fi
+
+# Only a clean target is safe to automate. Terminal `omc setup` has no
+# preserve mode and rewrites Claude's global configuration transactionally.
+if [[ -e "$claude_config_dir" || -L "$claude_config_dir" ]]; then
+  if [[ ! -d "$claude_config_dir" || -L "$claude_config_dir" || \
+    ! -O "$claude_config_dir" ]]; then
+    echo "OMC auto-setup skipped: Claude's config directory requires manual review" >&2
+    exit 0
+  fi
+  if /usr/bin/find "$claude_config_dir" -mindepth 1 -maxdepth 1 -print -quit | \
+    /usr/bin/grep -q .; then
+    echo "OMC auto-setup skipped: existing Claude state requires manual review" >&2
+    exit 0
+  fi
+fi
+
+# Keep OMC's workspace-local template stamp out of the activating checkout.
+(
+  cd "$HOME"
+  unset CLAUDE_PLUGIN_ROOT OMC_PLUGIN_ROOT
+  PATH="$(/usr/bin/dirname "$node_binary"):$PATH"
+  export PATH
+  "$omc_binary" setup --quiet --no-plugin
+)
+
+has_npm_installation || {
+  echo "OMC setup completed without a valid standalone installation witness" >&2
+  exit 1
+}
+reconcile_npm_runtime

@@ -140,6 +140,7 @@ check from closing the parent shell.
   gh auth status
   codex --version
   claude --version
+  omc --version
   tmux -V
   ssh -V
   test "$(dscl . -read "/Users/$(id -un)" UserShell)" = 'UserShell: /run/current-system/sw/bin/fish'
