@@ -3,6 +3,7 @@
 {
   imports = [
     ./packages.nix
+    ./oh-my-claudecode.nix
     ./filen-menubar.nix
     ./fish.nix
     ./git.nix

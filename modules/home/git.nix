@@ -131,6 +131,13 @@
       # Node
       "node_modules/"
 
+      # Oh My Claude Code runtime state. Keep project-scoped skills visible so
+      # repositories can opt into reviewing and sharing them.
+      "!.omc/"
+      ".omc/*"
+      "!.omc/skills/"
+      "!.omc/skills/**"
+
       # Python
       "__pycache__/"
       "*.pyc"

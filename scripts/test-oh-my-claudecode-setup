@@ -1,0 +1,236 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SETUP_HELPER="$REPO_ROOT/scripts/setup-oh-my-claudecode"
+JQ_BIN="$(command -v jq)"
+temp_base="${TMPDIR:-/tmp}"
+temp_base="${temp_base%/}"
+test_root="$(/usr/bin/mktemp -d "$temp_base/mac-setup-omc-test.XXXXXX")"
+
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "$temp_base"/mac-setup-omc-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fake_omc="$test_root/omc"
+fake_node="$test_root/node"
+package_root="$test_root/package"
+/bin/mkdir -p "$package_root/dist/hud"
+/usr/bin/printf '%s\n' 'export default {};' >"$package_root/dist/hud/index.js"
+# shellcheck disable=SC2016 # Write a fixture that expands variables at runtime.
+/usr/bin/printf '%s\n' \
+  '#!/bin/bash -p' \
+  'set -euo pipefail' \
+  '/usr/bin/printf '\''%s|%s\n'\'' "$PWD" "$*" >>"$OMC_TEST_LOG"' \
+  'config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"' \
+  '/bin/mkdir -p "$config_dir/agents" "$config_dir/hooks/lib" "$config_dir/hud/lib" "$config_dir/skills/omc-setup"' \
+  '/usr/bin/printf '\''{"version":"test","installMethod":"npm"}\n'\'' >"$config_dir/.omc-version.json"' \
+  '/usr/bin/printf '\''{"nodeBinary":"/stale/node"}\n'\'' >"$config_dir/.omc-config.json"' \
+  '/usr/bin/printf '\''<!-- OMC:START -->\n<!-- OMC:VERSION:test -->\n<!-- OMC:END -->\n'\'' >"$config_dir/CLAUDE.md"' \
+  '/usr/bin/printf '\''managed\n'\'' >"$config_dir/skills/omc-setup/.omc-managed"' \
+  'for runtime_file in hooks/code-simplifier.mjs hooks/find-node.sh hooks/keyword-detector.mjs hooks/lib/atomic-write.mjs hooks/lib/bounded-git-timeout.mjs hooks/lib/config-dir.mjs hooks/lib/config-dir.sh hooks/lib/model-routing-override-message.mjs hooks/lib/state-root.mjs hooks/lib/stdin.mjs hooks/lib/workflow-profile-runtime.mjs hooks/lib/workflow-stage-prompts.mjs hooks/persistent-mode.mjs hooks/post-tool-use-failure.mjs hooks/post-tool-use.mjs hooks/pre-tool-use.mjs hooks/session-start.mjs hud/find-node.sh hud/lib/config-dir.mjs hud/lib/config-dir.sh hud/omc-hud-cache.sh hud/omc-hud.mjs; do /usr/bin/printf '\''fixture\n'\'' >"$config_dir/$runtime_file"; done' \
+  '/usr/bin/printf '\''{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"node \\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/session-start.mjs\\""},{"type":"command","command":"node /custom/hooks/session-start.mjs"}]}]},"statusLine":{"type":"command","command":"sh ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hud/omc-hud-cache.sh ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hud/omc-hud.mjs"}}\n'\'' >"$config_dir/settings.json"' \
+  >"$fake_omc"
+/bin/chmod 0700 "$fake_omc"
+/usr/bin/printf '%s\n' '#!/bin/bash -p' 'exit 0' >"$fake_node"
+/bin/chmod 0700 "$fake_node"
+
+new_home() {
+  local name="$1"
+  local home_dir="$test_root/$name"
+
+  /bin/mkdir -m 0700 "$home_dir"
+  /usr/bin/printf '%s\n' "$home_dir"
+}
+
+run_helper() {
+  local home_dir="$1"
+  local log_file="$2"
+  local runtime_node="${3:-$fake_node}"
+  local runtime_package_root="${4:-$package_root}"
+
+  HOME="$home_dir" OMC_TEST_LOG="$log_file" \
+    "$SETUP_HELPER" "$fake_omc" "$runtime_node" \
+      "$runtime_package_root" "$JQ_BIN"
+}
+
+fresh_home="$(new_home fresh)"
+fresh_log="$test_root/fresh.log"
+run_helper "$fresh_home" "$fresh_log"
+[[ "$(/usr/bin/wc -l <"$fresh_log" | /usr/bin/tr -d '[:space:]')" == 1 ]]
+/usr/bin/grep -Fxq "$fresh_home|setup --quiet --no-plugin" "$fresh_log"
+[[ -f "$fresh_home/.claude/.omc-version.json" ]]
+# shellcheck disable=SC2016 # jq expands $node.
+"$JQ_BIN" -e --arg node "$fake_node" \
+  --arg package_root "$package_root" \
+  '.nodeBinary == $node
+    and .macSetupNixRuntime.nodeBinary == $node
+    and .macSetupNixRuntime.packageRoot == $package_root' \
+  "$fresh_home/.claude/.omc-config.json" >/dev/null
+expected_hook="'$fake_node' '$fresh_home/.claude/hooks/session-start.mjs'"
+expected_status="OMC_PLUGIN_ROOT='$package_root' /bin/sh '$fresh_home/.claude/hud/omc-hud-cache.sh' '$fresh_home/.claude/hud/omc-hud.mjs'"
+# shellcheck disable=SC2016 # jq expands $hook and $status.
+"$JQ_BIN" -e \
+  --arg hook "$expected_hook" \
+  --arg status "$expected_status" \
+  '.hooks.SessionStart[0].hooks[0].command == $hook
+    and .hooks.SessionStart[0].hooks[1].command == "node /custom/hooks/session-start.mjs"
+    and .statusLine.command == $status' \
+  "$fresh_home/.claude/settings.json" >/dev/null
+
+# A new Nix closure updates only the exact OMC-managed commands, without setup.
+fake_node_next="$test_root/node-next"
+package_root_next="$test_root/package-next"
+/usr/bin/printf '%s\n' '#!/bin/bash -p' 'exit 0' >"$fake_node_next"
+/bin/chmod 0700 "$fake_node_next"
+/bin/mkdir -p "$package_root_next/dist/hud"
+/usr/bin/printf '%s\n' 'export default {};' \
+  >"$package_root_next/dist/hud/index.js"
+# Upstream may refresh its own preferred Node independently. Closure updates
+# must follow the nested marker that this helper owns instead.
+config_temp="$(/usr/bin/mktemp "$fresh_home/.claude/.omc-config.json.tmp.XXXXXX")"
+"$JQ_BIN" '.nodeBinary = "/user/selected/node"' \
+  "$fresh_home/.claude/.omc-config.json" >"$config_temp"
+/bin/mv "$config_temp" "$fresh_home/.claude/.omc-config.json"
+run_helper "$fresh_home" "$fresh_log" "$fake_node_next" "$package_root_next"
+[[ "$(/usr/bin/wc -l <"$fresh_log" | /usr/bin/tr -d '[:space:]')" == 1 ]]
+expected_hook="'$fake_node_next' '$fresh_home/.claude/hooks/session-start.mjs'"
+expected_status="OMC_PLUGIN_ROOT='$package_root_next' /bin/sh '$fresh_home/.claude/hud/omc-hud-cache.sh' '$fresh_home/.claude/hud/omc-hud.mjs'"
+# shellcheck disable=SC2016 # jq expands its named --arg values.
+"$JQ_BIN" -e \
+  --arg hook "$expected_hook" \
+  --arg status "$expected_status" \
+  '.hooks.SessionStart[0].hooks[0].command == $hook
+    and .hooks.SessionStart[0].hooks[1].command == "node /custom/hooks/session-start.mjs"
+    and .statusLine.command == $status' \
+  "$fresh_home/.claude/settings.json" >/dev/null
+# shellcheck disable=SC2016 # jq expands its named --arg values.
+"$JQ_BIN" -e \
+  --arg node "$fake_node_next" \
+  --arg package_root "$package_root_next" \
+  '.nodeBinary == $node
+    and .macSetupNixRuntime.nodeBinary == $node
+    and .macSetupNixRuntime.packageRoot == $package_root' \
+  "$fresh_home/.claude/.omc-config.json" >/dev/null
+
+# Re-activation must trust the complete witness and not run setup again.
+config_hash="$(/usr/bin/shasum -a 256 \
+  "$fresh_home/.claude/.omc-config.json" | /usr/bin/awk '{print $1}')"
+settings_hash="$(/usr/bin/shasum -a 256 \
+  "$fresh_home/.claude/settings.json" | /usr/bin/awk '{print $1}')"
+run_helper "$fresh_home" "$fresh_log" "$fake_node_next" "$package_root_next"
+[[ "$(/usr/bin/wc -l <"$fresh_log" | /usr/bin/tr -d '[:space:]')" == 1 ]]
+[[ "$(/usr/bin/shasum -a 256 "$fresh_home/.claude/.omc-config.json" | \
+  /usr/bin/awk '{print $1}')" == "$config_hash" ]]
+[[ "$(/usr/bin/shasum -a 256 "$fresh_home/.claude/settings.json" | \
+  /usr/bin/awk '{print $1}')" == "$settings_hash" ]]
+
+# A user-composed status wrapper is not OMC-owned and remains unchanged.
+custom_home="$(new_home custom-wrapper)"
+custom_log="$test_root/custom-wrapper.log"
+run_helper "$custom_home" "$custom_log"
+managed_status="$("$JQ_BIN" -r '.statusLine.command' \
+  "$custom_home/.claude/settings.json")"
+custom_status="printf custom-before-omc\\n; $managed_status"
+custom_temp="$(/usr/bin/mktemp "$custom_home/.claude/settings.json.tmp.XXXXXX")"
+# shellcheck disable=SC2016 # jq expands $status.
+"$JQ_BIN" --arg status "$custom_status" \
+  '.statusLine.command = $status' \
+  "$custom_home/.claude/settings.json" >"$custom_temp"
+/bin/mv "$custom_temp" "$custom_home/.claude/settings.json"
+run_helper "$custom_home" "$custom_log" "$fake_node_next" "$package_root_next"
+[[ "$("$JQ_BIN" -r '.statusLine.command' \
+  "$custom_home/.claude/settings.json")" == "$custom_status" ]]
+[[ "$(/usr/bin/wc -l <"$custom_log" | /usr/bin/tr -d '[:space:]')" == 1 ]]
+
+# Missing managed runtime files make an npm witness ambiguous. Do not rerun
+# setup or rewrite settings; leave the partial state for manual review.
+for missing_runtime in \
+  hud/omc-hud.mjs \
+  hud/lib/config-dir.mjs \
+  hooks/session-start.mjs \
+  hooks/lib/atomic-write.mjs; do
+  case "$missing_runtime" in
+    hud/omc-hud.mjs) partial_name="missing-hud" ;;
+    hud/lib/*) partial_name="missing-hud-lib" ;;
+    hooks/session-start.mjs) partial_name="missing-hook" ;;
+    hooks/lib/*) partial_name="missing-hook-lib" ;;
+  esac
+  partial_home="$(new_home "$partial_name")"
+  partial_log="$test_root/$partial_name.log"
+  run_helper "$partial_home" "$partial_log"
+  /bin/rm -f -- "$partial_home/.claude/$missing_runtime"
+  partial_hash="$(/usr/bin/shasum -a 256 \
+    "$partial_home/.claude/.omc-config.json" \
+    "$partial_home/.claude/settings.json")"
+  run_helper "$partial_home" "$partial_log" \
+    "$fake_node_next" "$package_root_next" 2>/dev/null
+  [[ "$(/usr/bin/wc -l <"$partial_log" | \
+    /usr/bin/tr -d '[:space:]')" == 1 ]]
+  [[ "$(/usr/bin/shasum -a 256 \
+    "$partial_home/.claude/.omc-config.json" \
+    "$partial_home/.claude/settings.json")" == "$partial_hash" ]]
+done
+
+configured_home="$(new_home configured)"
+/bin/mkdir -p "$configured_home/.claude"
+/usr/bin/printf '%s\n' \
+  '{"setupCompleted":"2026-01-01T00:00:00Z"}' \
+  >"$configured_home/.claude/.omc-config.json"
+run_helper "$configured_home" "$test_root/configured.log"
+[[ ! -e "$test_root/configured.log" ]]
+
+# A completed interactive setup wins even if older npm witnesses coexist.
+/bin/mkdir -p \
+  "$configured_home/.claude/agents" \
+  "$configured_home/.claude/skills/omc-setup"
+/usr/bin/printf '%s\n' '{"version":"test","installMethod":"npm"}' \
+  >"$configured_home/.claude/.omc-version.json"
+/usr/bin/printf '%s\n' \
+  '<!-- OMC:START -->' \
+  '<!-- OMC:VERSION:test -->' \
+  '<!-- OMC:END -->' \
+  >"$configured_home/.claude/CLAUDE.md"
+/usr/bin/printf '%s\n' managed \
+  >"$configured_home/.claude/skills/omc-setup/.omc-managed"
+/usr/bin/printf '%s\n' '{"custom":true}' \
+  >"$configured_home/.claude/settings.json"
+configured_hash="$(/usr/bin/shasum -a 256 \
+  "$configured_home/.claude/.omc-config.json" \
+  "$configured_home/.claude/settings.json")"
+run_helper "$configured_home" "$test_root/configured.log"
+[[ ! -e "$test_root/configured.log" ]]
+[[ "$(/usr/bin/shasum -a 256 \
+  "$configured_home/.claude/.omc-config.json" \
+  "$configured_home/.claude/settings.json")" == "$configured_hash" ]]
+
+legacy_home="$(new_home legacy)"
+/bin/mkdir -p "$legacy_home/.claude"
+/usr/bin/printf '%s\n' \
+  '<!-- OMC:START -->' \
+  '# Existing OMC configuration' \
+  '<!-- OMC:END -->' \
+  >"$legacy_home/.claude/CLAUDE.md"
+run_helper "$legacy_home" "$test_root/legacy.log" 2>/dev/null
+[[ ! -e "$test_root/legacy.log" ]]
+
+# Unrelated or ambiguous Claude Code state is outside the automatic mutation
+# boundary and must remain byte-for-byte unchanged.
+claude_only_home="$(new_home claude-only)"
+/bin/mkdir -p "$claude_only_home/.claude"
+/usr/bin/printf '%s\n' '# Existing Claude configuration' \
+  >"$claude_only_home/.claude/CLAUDE.md"
+claude_only_hash="$(/usr/bin/shasum -a 256 \
+  "$claude_only_home/.claude/CLAUDE.md" | /usr/bin/awk '{print $1}')"
+run_helper "$claude_only_home" "$test_root/claude-only.log" 2>/dev/null
+[[ ! -e "$test_root/claude-only.log" ]]
+[[ "$(/usr/bin/shasum -a 256 "$claude_only_home/.claude/CLAUDE.md" | \
+  /usr/bin/awk '{print $1}')" == "$claude_only_hash" ]]
+
+echo "Oh My Claude Code setup guard tests passed"
