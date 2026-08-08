@@ -51,6 +51,28 @@ configuration that this repository already owns.
 Project Node versions are selected with `fnm`. No system Node package is
 installed.
 
+Oh My Claude Code is built from its pinned npm source and exposed as `omc` and
+`oh-my-claudecode`; it does not depend on an `fnm`-managed Node installation or
+the Claude Code marketplace. On first activation, Home Manager runs
+`omc setup --quiet --no-plugin` only when Claude's configuration directory is
+empty. The guard accepts a completed interactive setup or the complete npm
+installation witness, so it does not run again on later activations or over an
+existing OMC setup. Ambiguous or unrelated Claude state is left untouched and
+reported for manual review because the terminal setup command has no preserve
+mode.
+
+For a standalone npm setup, later activations only reconcile OMC-owned hook,
+HUD, and Node runtime paths with the current Nix closure. This does not rerun
+setup or replace user-authored Claude configuration, and it prevents old store
+paths from breaking after Nix garbage collection.
+
+Package updates do not force setup to run again. Invoke `omc setup` manually if
+an upstream release explicitly requires a configuration refresh.
+
+OMC runtime state below `.omc/` is globally ignored, except for
+`.omc/skills/**`. That exception follows upstream's policy so repositories can
+review and commit project-scoped OMC skills deliberately.
+
 ## Writable application settings
 
 ### Otty
