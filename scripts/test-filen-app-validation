@@ -14,15 +14,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-/usr/bin/grep -Fq -- "--data-dir \"\$HOME/Library/Application Support/filen-cli\"" \
-  "$FILEN_MODULE" || {
-  echo "Filen launcher does not force the protected macOS state directory" >&2
+if /usr/bin/grep -Fq 'pkgs.filen-cli' "$FILEN_MODULE"; then
+  echo "Filen Menubar still declares the standalone Nix Filen CLI" >&2
   exit 1
-}
+fi
+if /usr/bin/grep -Fq 'home.file.".local/bin/filen"' "$FILEN_MODULE"; then
+  echo "Filen Menubar still installs a standalone Filen CLI launcher" >&2
+  exit 1
+fi
+/usr/bin/grep -Fq 'sync backend and Node runtime are contained inside' \
+  "$FILEN_MODULE"
 
 expected_app="$test_dir/expected/Filen Menubar.app"
 copied_app="$test_dir/copied/Filen Menubar.app"
-/bin/mkdir -p "$expected_app/Contents/MacOS" "$test_dir/copied"
+/bin/mkdir -p \
+  "$expected_app/Contents/MacOS" \
+  "$expected_app/Contents/Helpers" \
+  "$expected_app/Contents/Resources/filen-cli" \
+  "$expected_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring" \
+  "$expected_app/Contents/Resources/licenses/filen-cli" \
+  "$test_dir/copied"
 /usr/bin/plutil -create xml1 "$expected_app/Contents/Info.plist"
 /usr/bin/plutil -insert CFBundleIdentifier -string org.example.filen-menubar-test \
   "$expected_app/Contents/Info.plist"
@@ -32,8 +43,26 @@ copied_app="$test_dir/copied/Filen Menubar.app"
   "$expected_app/Contents/Info.plist"
 /usr/bin/plutil -insert CFBundlePackageType -string APPL \
   "$expected_app/Contents/Info.plist"
-printf '#!/bin/sh\nexit 0\n' >"$expected_app/Contents/MacOS/filen-menubar"
-/bin/chmod 755 "$expected_app/Contents/MacOS/filen-menubar"
+/bin/cp /usr/bin/true "$expected_app/Contents/MacOS/filen-menubar"
+/bin/cp /usr/bin/true "$expected_app/Contents/Helpers/filen-menubar-cli"
+/bin/cp /usr/bin/true \
+  "$expected_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
+printf '%s\n' 'console.log("bundled backend fixture");' \
+  >"$expected_app/Contents/Resources/filen-cli/filen-cli.cjs"
+for runtime_notice in \
+  AGPL-3.0.txt \
+  NODE-LICENSE.txt \
+  THIRD_PARTY_NOTICES.txt; do
+  printf '%s\n' "bundled runtime fixture: $runtime_notice" \
+    >"$expected_app/Contents/Resources/licenses/filen-cli/$runtime_notice"
+done
+printf '%s\n' '{"bomFormat":"CycloneDX"}' \
+  >"$expected_app/Contents/Resources/licenses/filen-cli/runtime.cdx.json"
+/usr/bin/codesign --force --sign - \
+  "$expected_app/Contents/Helpers/filen-menubar-cli" >/dev/null 2>&1
+/usr/bin/codesign --force --sign - \
+  "$expected_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node" \
+  >/dev/null 2>&1
 /usr/bin/codesign --force --sign - "$expected_app" >/dev/null 2>&1
 /bin/cp -R "$expected_app" "$copied_app"
 
@@ -51,6 +80,33 @@ fi
 printf '# altered\n' >>"$copied_app/Contents/MacOS/filen-menubar"
 if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
   echo "Filen app validation accepted an altered executable" >&2
+  exit 1
+fi
+
+/bin/rm -rf -- "$copied_app"
+/bin/cp -R "$expected_app" "$copied_app"
+printf '%s\n' 'console.log("altered backend");' \
+  >"$copied_app/Contents/Resources/filen-cli/filen-cli.cjs"
+if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
+  echo "Filen app validation accepted an altered bundled backend" >&2
+  exit 1
+fi
+
+/bin/rm -rf -- "$copied_app"
+/bin/cp -R "$expected_app" "$copied_app"
+printf '%s\n' 'altered runtime notices' \
+  >"$copied_app/Contents/Resources/licenses/filen-cli/THIRD_PARTY_NOTICES.txt"
+if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
+  echo "Filen app validation accepted altered bundled runtime notices" >&2
+  exit 1
+fi
+
+/bin/rm -rf -- "$copied_app"
+/bin/cp -R "$expected_app" "$copied_app"
+/bin/rm -f -- \
+  "$copied_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
+if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
+  echo "Filen app validation accepted a missing native keyring addon" >&2
   exit 1
 fi
 

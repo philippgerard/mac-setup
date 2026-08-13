@@ -6,11 +6,6 @@ let
   );
   version = release.version;
 
-  # Upstream recommends this stable legacy release while its replacement is in
-  # beta. nixpkgs builds it as a standalone Bun executable, avoiding the npm
-  # package's obsolete exact-Node-23 engine declaration.
-  filenCli = pkgs.filen-cli;
-
   filenMenubar = pkgs.stdenvNoCC.mkDerivation {
     pname = "filen-menubar";
     inherit version;
@@ -36,22 +31,13 @@ let
     meta = {
       description = "Native menu-bar controller for Filen cloud sync";
       homepage = "https://github.com/philippgerard/filen-menubar";
-      license = lib.licenses.mit;
+      license = with lib.licenses; [ mit agpl3Only ];
       platforms = [ "aarch64-darwin" ];
       sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
     };
   };
 
   executable = "${filenMenubar}/Applications/Filen Menubar.app/Contents/MacOS/filen-menubar";
-  filenCliLauncher = pkgs.writeShellScript "filen" ''
-    # This executable is pinned by Nix, so suppress its built-in self-updater.
-    # Force the modern macOS state directory: upstream otherwise prefers a
-    # legacy ~/.filen-cli directory whenever one happens to exist.
-    exec ${filenCli}/bin/filen \
-      --skip-update \
-      --data-dir "$HOME/Library/Application Support/filen-cli" \
-      "$@"
-  '';
 in
 assert builtins.attrNames release == [ "hash" "version" ];
 assert builtins.isString release.version;
@@ -61,12 +47,8 @@ assert builtins.match "sha256-[A-Za-z0-9+/]{43}=" release.hash != null;
 {
   home.packages = [ filenMenubar ];
 
-  # Finder-launched apps do not inherit the shell PATH. The app searches this
-  # location explicitly, and the launcher supplies the pinned standalone CLI.
-  home.file.".local/bin/filen" = {
-    source = filenCliLauncher;
-    executable = true;
-  };
+  # Keep a stable command for launching the pinned application. Its patched
+  # sync backend and Node runtime are contained inside the signed app bundle.
   home.file.".local/bin/filen-menubar" = {
     source = executable;
     executable = true;

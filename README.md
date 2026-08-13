@@ -46,8 +46,9 @@ After the build succeeds and its changes look right:
 Follow the guided prompts. This activates the system, connects 1Password,
 restores Git identity, personal Mail and configured DAV services, checks and
 restores any missing declared S/MIME identities in the login keychain, restores
-legacy GPG keys and Filen state, and opens the macOS profiles that require
-approval.
+legacy GPG keys and Filen Menubar configuration, launches Filen Menubar, and
+opens the macOS profiles that require approval. Filen authentication uses the
+application's in-app Login flow when needed.
 
 The flow is resumable. If macOS asks for App Management permission, enable the
 terminal in **System Settings > Privacy & Security > App Management**, quit and
@@ -75,7 +76,7 @@ password, Microsoft 365, and migration details.
 - macOS defaults, Fish, Git/SSH policy, tmux, Otty, and editable Zed settings
 - the pinned CLI and development toolchain
 - GUI and Mac App Store applications from the configured profiles
-- Filen Menubar and the standalone Filen CLI
+- Filen Menubar with its bundled patched sync backend and Node runtime
 - private Git and GPG state, password-free Mail/DAV metadata, and Filen
   configuration from 1Password
 

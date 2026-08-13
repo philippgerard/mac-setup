@@ -111,16 +111,38 @@ check from closing the parent shell.
   test ! -L "$zed_settings"
   test -w "$zed_settings"
 
-  # 7. Verify the standalone Filen CLI and login agent.
+  # 7. Verify Filen Menubar, its bundled backend, and the login agent.
   filen_config="$HOME/Library/Application Support/filen-menubar/config.json"
   test -s "$filen_config"
   test "$(/usr/bin/stat -f '%Lp' "$filen_config")" = 600
-  filen --version
-  test "$(/usr/bin/stat -f '%Lp' "$HOME/Library/Application Support/filen-cli")" = 700
-  filen_credential="$HOME/Library/Application Support/filen-cli/.filen-cli-keep-me-logged-in"
+  test ! -e "$HOME/.local/bin/filen"
+  filen_app="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
+  test -d "$filen_app"
+  test ! -L "$filen_app"
+  test -x "$filen_app/Contents/Helpers/filen-menubar-cli"
+  test -s "$filen_app/Contents/Resources/filen-cli/filen-cli.cjs"
+  test -s "$filen_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
+  for filen_notice in \
+    AGPL-3.0.txt \
+    NODE-LICENSE.txt \
+    THIRD_PARTY_NOTICES.txt \
+    runtime.cdx.json; do
+    test -s "$filen_app/Contents/Resources/licenses/filen-cli/$filen_notice"
+  done
+  /usr/bin/codesign --verify --deep --strict "$filen_app"
+  /usr/bin/codesign --verify --strict \
+    "$filen_app/Contents/Helpers/filen-menubar-cli"
+  /usr/bin/codesign --verify --strict \
+    "$filen_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
+  if test -e "$HOME/.filen-cli"; then
+    filen_state="$HOME/.filen-cli"
+  else
+    filen_state="$HOME/Library/Application Support/filen-cli"
+  fi
+  test -d "$filen_state"
+  test "$(/usr/bin/stat -f '%Lp' "$filen_state")" = 700
+  filen_credential="$filen_state/.filen-cli-keep-me-logged-in"
   test ! -e "$filen_credential" || test "$(/usr/bin/stat -f '%Lp' "$filen_credential")" = 600
-  test -d "$HOME/Applications/Home Manager Apps/Filen Menubar.app"
-  test ! -L "$HOME/Applications/Home Manager Apps/Filen Menubar.app"
   launchctl print "gui/$(id -u)/org.nix-community.home.filen-menubar" >/dev/null
   test -d '/Applications/Microsoft Teams.app'
 

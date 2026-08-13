@@ -25,6 +25,7 @@ grep -Fq "missing declared S/MIME identities" <<<"$default_plan"
 grep -Fq "iCloud service restrictions profile" <<<"$default_plan"
 grep -Fq "legacy GPG" <<<"$default_plan"
 grep -Fq "Filen config" <<<"$default_plan"
+grep -Fq "in-app Login" <<<"$default_plan"
 
 custom_plan="$($FINISH_SCRIPT \
   --dry-run \
@@ -88,6 +89,58 @@ extract_finish_function() {
     }
   ' "$FINISH_SCRIPT"
 }
+
+extract_finish_function_with_nested_blocks() {
+  local function_name="$1"
+
+  /usr/bin/awk -v function_start="$function_name() {" '
+    $0 == function_start {
+      in_function = 1
+    }
+    in_function {
+      print
+      opening_count = gsub(/\{/, "{")
+      closing_count = gsub(/\}/, "}")
+      depth += opening_count - closing_count
+      if (depth == 0) {
+        exit
+      }
+    }
+  ' "$FINISH_SCRIPT"
+}
+
+select_filen_state_function="$(
+  extract_finish_function_with_nested_blocks select_filen_backend_state
+)"
+secure_filen_state_function="$(
+  extract_finish_function_with_nested_blocks secure_filen_backend_state
+)"
+
+# The bundled backend retains an existing legacy state directory, otherwise
+# creates the modern directory, and normalizes session permissions either way.
+filen_state_test="$test_dir/filen-state"
+/bin/mkdir -m 700 "$filen_state_test" \
+  "$filen_state_test/Application Support"
+# shellcheck disable=SC2034 # Variables are read by evaluated production functions.
+(
+  FILEN_MODERN_STATE_DIR="$filen_state_test/Application Support/filen-cli"
+  FILEN_LEGACY_STATE_DIR="$filen_state_test/.filen-cli"
+  FILEN_STATE_DIR=""
+  FILEN_CREDENTIAL_FILE=""
+  eval "$select_filen_state_function"
+  eval "$secure_filen_state_function"
+  secure_filen_backend_state
+  [[ "$FILEN_STATE_DIR" == "$FILEN_MODERN_STATE_DIR" ]]
+  [[ "$(/usr/bin/stat -f '%Lp' "$FILEN_STATE_DIR")" == 700 ]]
+
+  /bin/mkdir -m 755 "$FILEN_LEGACY_STATE_DIR"
+  printf '%s\n' session >"$FILEN_LEGACY_STATE_DIR/.filen-cli-keep-me-logged-in"
+  /bin/chmod 666 "$FILEN_LEGACY_STATE_DIR/.filen-cli-keep-me-logged-in"
+  secure_filen_backend_state
+  [[ "$FILEN_STATE_DIR" == "$FILEN_LEGACY_STATE_DIR" ]]
+  [[ "$(/usr/bin/stat -f '%Lp' "$FILEN_STATE_DIR")" == 700 ]]
+  [[ "$(/usr/bin/stat -f '%Lp' "$FILEN_CREDENTIAL_FILE")" == 600 ]]
+)
 
 mail_type_function="$(extract_finish_function mail_account_type)"
 mail_smime_function="$(extract_finish_function mail_account_uses_smime)"
@@ -355,8 +408,13 @@ if grep -Eq '^ONEPASSWORD_ACCOUNT_VALUE=.*\$\{?OP_ACCOUNT' "$FINISH_SCRIPT"; the
 fi
 grep -Fq '.account_uuid' "$FINISH_SCRIPT"
 grep -Fq 'mac_setup_sanitize_1password_environment' "$FINISH_SCRIPT"
-grep -Fq '^/nix/store/[0-9a-z]{32}-filen$' "$FINISH_SCRIPT"
+if grep -Fq '^/nix/store/[0-9a-z]{32}-filen$' "$FINISH_SCRIPT"; then
+  echo "finish-setup still validates a standalone Filen CLI" >&2
+  exit 1
+fi
 grep -Fq 'validate_filen_app' "$FINISH_SCRIPT"
+grep -Fq 'secure_filen_backend_state' "$FINISH_SCRIPT"
+grep -Fq 'authenticate through its in-app Login flow' "$FINISH_SCRIPT"
 # shellcheck disable=SC2016 # Match literal production variable references.
 grep -Fq '"$FILEN_APP_VALIDATOR" "$FILEN_IMMUTABLE_APP" "$FILEN_APP"' "$FINISH_SCRIPT"
 

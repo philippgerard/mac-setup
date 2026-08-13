@@ -27,11 +27,12 @@ Filen Menubar is the explicit exception to the Homebrew-first GUI policy: its
 Apple Silicon DMG is checksum-pinned in Nix because no stable cask exists. The
 reviewed maintenance workflow automatically refreshes that pin from the latest
 stable GitHub release and verifies the release-asset digest before building.
-The pinned Nix package collection builds its stable CLI as a standalone Apple
-Silicon executable; it requires no Node runtime and has self-updates disabled.
-The launcher also fixes its state directory to the protected modern macOS path,
-so a leftover `~/.filen-cli` directory cannot change credential precedence.
-Private sync paths restore from 1Password.
+The signed app bundle contains its patched sync backend and pinned Node runtime;
+no standalone Filen CLI, npm package, or system Node runtime is declared. The
+backend cannot self-update independently of the reviewed application release.
+It retains a pre-existing legacy `~/.filen-cli` state directory when present
+and otherwise uses the protected modern macOS path. Private sync paths restore
+from 1Password, while authentication remains an interactive in-app step.
 
 SecureSafe's vendor package requires Rosetta 2. The switch workflow installs
 Rosetta when absent before Homebrew activation.

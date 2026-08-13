@@ -10,12 +10,22 @@ fi
 EXPECTED_APP="$1"
 COPIED_APP="$2"
 RELATIVE_EXECUTABLE="Contents/MacOS/filen-menubar"
-EXPECTED_EXECUTABLE="$EXPECTED_APP/$RELATIVE_EXECUTABLE"
-COPIED_EXECUTABLE="$COPIED_APP/$RELATIVE_EXECUTABLE"
+RELATIVE_HELPER="Contents/Helpers/filen-menubar-cli"
+RELATIVE_KEYRING="Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
+REQUIRED_EXECUTABLES=(
+  "$RELATIVE_EXECUTABLE"
+  "$RELATIVE_HELPER"
+  "$RELATIVE_KEYRING"
+)
+REQUIRED_RESOURCES=(
+  "Contents/Resources/filen-cli/filen-cli.cjs"
+  "Contents/Resources/licenses/filen-cli/AGPL-3.0.txt"
+  "Contents/Resources/licenses/filen-cli/NODE-LICENSE.txt"
+  "Contents/Resources/licenses/filen-cli/THIRD_PARTY_NOTICES.txt"
+  "Contents/Resources/licenses/filen-cli/runtime.cdx.json"
+)
 
-[[ -d "$EXPECTED_APP" && ! -L "$EXPECTED_APP" && \
-  -f "$EXPECTED_EXECUTABLE" && ! -L "$EXPECTED_EXECUTABLE" && \
-  -x "$EXPECTED_EXECUTABLE" ]] || {
+[[ -d "$EXPECTED_APP" && ! -L "$EXPECTED_APP" ]] || {
   echo "the immutable Filen Menubar application is unavailable or unsafe" >&2
   exit 1
 }
@@ -23,29 +33,61 @@ COPIED_EXECUTABLE="$COPIED_APP/$RELATIVE_EXECUTABLE"
   echo "the copied Filen Menubar application must be a user-owned directory, not a symlink" >&2
   exit 1
 }
-[[ -f "$COPIED_EXECUTABLE" && ! -L "$COPIED_EXECUTABLE" && \
-  -O "$COPIED_EXECUTABLE" && -x "$COPIED_EXECUTABLE" ]] || {
-  echo "the copied Filen Menubar executable is unavailable or unsafe" >&2
-  exit 1
-}
 
 copied_app_mode="$(/usr/bin/stat -f '%Lp' "$COPIED_APP")"
-copied_executable_mode="$(/usr/bin/stat -f '%Lp' "$COPIED_EXECUTABLE")"
-[[ "$copied_app_mode" =~ ^[0-7]{3,4}$ && \
-  "$copied_executable_mode" =~ ^[0-7]{3,4}$ ]] || {
+[[ "$copied_app_mode" =~ ^[0-7]{3,4}$ ]] || {
   echo "the copied Filen Menubar application has unsupported permissions" >&2
   exit 1
 }
-(( (8#$copied_app_mode & 8#22) == 0 && \
-  (8#$copied_executable_mode & 8#22) == 0 )) || {
+(( (8#$copied_app_mode & 8#22) == 0 )) || {
   echo "the copied Filen Menubar application is writable outside its owner" >&2
   exit 1
 }
 
-/usr/bin/cmp -s "$EXPECTED_EXECUTABLE" "$COPIED_EXECUTABLE" || {
-  echo "the copied Filen Menubar executable differs from the pinned application" >&2
-  exit 1
+validate_bundled_file() {
+  local relative_path="$1"
+  local must_be_executable="$2"
+  local expected_path="$EXPECTED_APP/$relative_path"
+  local copied_path="$COPIED_APP/$relative_path"
+  local copied_mode
+
+  [[ -f "$expected_path" && ! -L "$expected_path" && -s "$expected_path" ]] || {
+    echo "the pinned Filen Menubar bundle is missing $relative_path" >&2
+    exit 1
+  }
+  [[ -f "$copied_path" && ! -L "$copied_path" && -O "$copied_path" && \
+    -s "$copied_path" ]] || {
+    echo "the copied Filen Menubar bundle is missing or does not own $relative_path" >&2
+    exit 1
+  }
+  if [[ "$must_be_executable" == 1 ]]; then
+    [[ -x "$expected_path" && -x "$copied_path" ]] || {
+      echo "the Filen Menubar bundle contains a non-executable $relative_path" >&2
+      exit 1
+    }
+  fi
+  copied_mode="$(/usr/bin/stat -f '%Lp' "$copied_path")"
+  [[ "$copied_mode" =~ ^[0-7]{3,4}$ ]] || {
+    echo "the copied Filen Menubar bundle has unsupported permissions for $relative_path" >&2
+    exit 1
+  }
+  (( (8#$copied_mode & 8#22) == 0 )) || {
+    echo "the copied Filen Menubar bundle is writable outside its owner at $relative_path" >&2
+    exit 1
+  }
+  /usr/bin/cmp -s "$expected_path" "$copied_path" || {
+    echo "the copied Filen Menubar bundle differs from the pinned application at $relative_path" >&2
+    exit 1
+  }
 }
+
+for relative_path in "${REQUIRED_EXECUTABLES[@]}"; do
+  validate_bundled_file "$relative_path" 1
+done
+for relative_path in "${REQUIRED_RESOURCES[@]}"; do
+  validate_bundled_file "$relative_path" 0
+done
+
 /usr/bin/codesign --verify --deep --strict "$EXPECTED_APP" >/dev/null 2>&1 || {
   echo "the pinned Filen Menubar code signature is invalid" >&2
   exit 1
@@ -54,3 +96,13 @@ copied_executable_mode="$(/usr/bin/stat -f '%Lp' "$COPIED_EXECUTABLE")"
   echo "the copied Filen Menubar code signature is invalid" >&2
   exit 1
 }
+for relative_path in "$RELATIVE_HELPER" "$RELATIVE_KEYRING"; do
+  /usr/bin/codesign --verify --strict "$EXPECTED_APP/$relative_path" >/dev/null 2>&1 || {
+    echo "the pinned Filen Menubar nested signature is invalid at $relative_path" >&2
+    exit 1
+  }
+  /usr/bin/codesign --verify --strict "$COPIED_APP/$relative_path" >/dev/null 2>&1 || {
+    echo "the copied Filen Menubar nested signature is invalid at $relative_path" >&2
+    exit 1
+  }
+done

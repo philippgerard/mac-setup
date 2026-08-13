@@ -25,13 +25,13 @@ INTERNET_ACCOUNTS_URL="x-apple.systempreferences:com.apple.Internet-Accounts-Set
 ONEPASSWORD_ACCOUNT_VALUE="${MAC_SETUP_1PASSWORD_ACCOUNT:-}"
 VAULT_VALUE="${MAC_SETUP_1PASSWORD_VAULT:-$MAC_SETUP_1PASSWORD_VAULT_DEFAULT}"
 ONEPASSWORD_SSH_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-FILEN_BIN="$HOME/.local/bin/filen"
 FILEN_APP="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
 FILEN_APP_LAUNCHER="$HOME/.local/bin/filen-menubar"
 FILEN_APP_VALIDATOR="$REPO_ROOT/scripts/validate-filen-app-copy"
-FILEN_STATE_DIR="$HOME/Library/Application Support/filen-cli"
-FILEN_CREDENTIAL_FILE="$FILEN_STATE_DIR/.filen-cli-keep-me-logged-in"
-FILEN_TARGET=""
+FILEN_MODERN_STATE_DIR="$HOME/Library/Application Support/filen-cli"
+FILEN_LEGACY_STATE_DIR="$HOME/.filen-cli"
+FILEN_STATE_DIR=""
+FILEN_CREDENTIAL_FILE=""
 FILEN_APP_TARGET=""
 FILEN_IMMUTABLE_APP=""
 
@@ -69,7 +69,7 @@ Options:
   --no-mail               Skip Mail/DAV metadata and account restoration.
   --skip-git              Skip private Git identity restoration.
   --skip-gpg              Skip legacy GPG restoration.
-  --skip-filen            Skip Filen config, authentication, and launch.
+  --skip-filen            Skip Filen config restore and application launch.
   --skip-icloud           Skip the iCloud service restrictions profile.
   --update-profiles       Permit explicit review of an installed profile whose
                           effective content differs from the generated profile.
@@ -190,7 +190,7 @@ print_plan() {
     done
   fi
   [[ "$SKIP_GPG" -eq 1 ]] || echo "  - restore legacy GPG keys and ownertrust from 1Password"
-  [[ "$SKIP_FILEN" -eq 1 ]] || echo "  - restore Filen config, authenticate the CLI, and launch Filen Menubar"
+  [[ "$SKIP_FILEN" -eq 1 ]] || echo "  - restore Filen config, launch Filen Menubar, and use its in-app Login when needed"
 }
 
 mail_account_uses_smime() {
@@ -344,54 +344,41 @@ authenticate_1password() {
   fi
 }
 
-secure_filen_cli_state() {
+select_filen_backend_state() {
+  if [[ -e "$FILEN_LEGACY_STATE_DIR" || -L "$FILEN_LEGACY_STATE_DIR" ]]; then
+    FILEN_STATE_DIR="$FILEN_LEGACY_STATE_DIR"
+  else
+    FILEN_STATE_DIR="$FILEN_MODERN_STATE_DIR"
+  fi
+  FILEN_CREDENTIAL_FILE="$FILEN_STATE_DIR/.filen-cli-keep-me-logged-in"
+}
+
+secure_filen_backend_state() {
+  local state_parent
+
+  select_filen_backend_state
   if [[ -e "$FILEN_STATE_DIR" || -L "$FILEN_STATE_DIR" ]]; then
     [[ -d "$FILEN_STATE_DIR" && ! -L "$FILEN_STATE_DIR" && -O "$FILEN_STATE_DIR" ]] || {
-      echo "the Filen CLI state directory is unsafe" >&2
+      echo "the Filen backend state directory is unsafe" >&2
       exit 1
     }
-    /bin/chmod 700 "$FILEN_STATE_DIR"
+  else
+    state_parent="$(/usr/bin/dirname "$FILEN_STATE_DIR")"
+    [[ -d "$state_parent" && ! -L "$state_parent" && -O "$state_parent" ]] || {
+      echo "the Filen backend state parent is unsafe or missing" >&2
+      exit 1
+    }
+    /bin/mkdir -m 700 "$FILEN_STATE_DIR"
   fi
+  /bin/chmod 700 "$FILEN_STATE_DIR"
 
   if [[ -e "$FILEN_CREDENTIAL_FILE" || -L "$FILEN_CREDENTIAL_FILE" ]]; then
     [[ -f "$FILEN_CREDENTIAL_FILE" && ! -L "$FILEN_CREDENTIAL_FILE" && -O "$FILEN_CREDENTIAL_FILE" ]] || {
-      echo "the Filen CLI credential file is unsafe" >&2
+      echo "the Filen backend credential file is unsafe" >&2
       exit 1
     }
     /bin/chmod 600 "$FILEN_CREDENTIAL_FILE"
   fi
-}
-
-validate_filen_launcher() {
-  local filen_mode
-  local filen_owner
-
-  [[ -L "$FILEN_BIN" ]] || {
-    echo "the Home Manager Filen CLI launcher is missing or is not a symlink" >&2
-    exit 1
-  }
-  FILEN_TARGET="$(realpath "$FILEN_BIN")" || {
-    echo "the Home Manager Filen CLI launcher could not be resolved" >&2
-    exit 1
-  }
-  [[ "$FILEN_TARGET" =~ ^/nix/store/[0-9a-z]{32}-filen$ ]] || {
-    echo "the Filen CLI launcher does not resolve to the expected immutable Nix-store target" >&2
-    exit 1
-  }
-  [[ -f "$FILEN_TARGET" && ! -L "$FILEN_TARGET" && -x "$FILEN_TARGET" ]] || {
-    echo "the resolved Filen CLI target is not a regular executable" >&2
-    exit 1
-  }
-  filen_owner="$(/usr/bin/stat -Lf '%Su' "$FILEN_TARGET")"
-  filen_mode="$(/usr/bin/stat -Lf '%Lp' "$FILEN_TARGET")"
-  [[ "$filen_owner" == "root" && "$filen_mode" =~ ^[0-7]{3,4}$ ]] || {
-    echo "the resolved Filen CLI target has unsafe ownership or permissions" >&2
-    exit 1
-  }
-  (( (8#$filen_mode & 8#22) == 0 )) || {
-    echo "the resolved Filen CLI target is writable outside its owner" >&2
-    exit 1
-  }
 }
 
 validate_filen_app() {
@@ -610,7 +597,6 @@ if [[ "$SKIP_GPG" -eq 0 ]]; then
 fi
 
 if [[ "$SKIP_FILEN" -eq 0 ]]; then
-  validate_filen_launcher
   validate_filen_app
   if /usr/bin/pgrep -x filen-menubar >/dev/null 2>&1; then
     pause_for_user "Quit Filen Menubar from its menu before its configuration is restored."
@@ -621,13 +607,9 @@ if [[ "$SKIP_FILEN" -eq 0 ]]; then
   fi
 
   "$REPO_ROOT/scripts/restore-filen-menubar-from-1password"
-  secure_filen_cli_state
-  if ! "$FILEN_TARGET" whoami </dev/null >/dev/null 2>&1; then
-    echo "Authenticate the Filen CLI when prompted."
-    "$FILEN_TARGET" whoami </dev/tty
-  fi
-  secure_filen_cli_state
+  secure_filen_backend_state
   /usr/bin/open "$FILEN_IMMUTABLE_APP"
+  echo "If Filen Menubar shows Login, authenticate through its in-app Login flow."
 fi
 
 printf '\nGuided setup steps completed.\n'

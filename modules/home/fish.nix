@@ -117,8 +117,6 @@
       end
 
       # Keep reviewed user launchers ahead of fnm/npm globals and integrations.
-      # In particular, this makes the pinned standalone Filen launcher win over
-      # an obsolete npm-global copy left by an earlier activation.
       fish_add_path --path --move "$HOME/.local/bin"
 
     '';

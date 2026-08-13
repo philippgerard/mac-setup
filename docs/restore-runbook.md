@@ -73,8 +73,8 @@ The default flow:
    missing identities from 1Password into the login keychain;
 7. restores legacy GPG keys and ownertrust;
 8. restores Filen Menubar configuration;
-9. authenticates the Filen CLI when needed; and
-10. launches Filen Menubar.
+9. protects the bundled backend's local state and launches Filen Menubar; and
+10. directs authentication to the app's Login flow when needed.
 
 The command is resumable. Rerun the same `--provision` command after an
 interrupted approval or sign-in, unless setup specifically asks for
@@ -97,7 +97,7 @@ macOS and vendors intentionally keep these steps interactive:
   type `configured` when setup asks for confirmation;
 - quit Filen Menubar from its menu if setup pauses before restoring its
   configuration; and
-- authenticate the Filen CLI.
+- authenticate through Filen Menubar's in-app Login flow when it appears.
 
 If Home Manager stops at `checkAppManagementPermission`, enable the terminal in
 **System Settings > Privacy & Security > App Management**, quit and reopen that

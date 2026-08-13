@@ -107,29 +107,29 @@ it without activation so the version and hash change remain reviewable. Home
 Manager copies a real, Spotlight-searchable application bundle to
 `~/Applications/Home Manager Apps/Filen Menubar.app` and starts it at login.
 
-The Filen CLI comes from the pinned Nix package collection as a standalone
-Apple Silicon executable. It does not need Node or npm, and its self-updater is
-disabled so upgrades remain reviewed repository changes. The launcher selects
-the protected modern macOS state directory even when a legacy
-`~/.filen-cli` directory exists.
+The signed application bundle contains the patched sync backend and its pinned
+Node runtime. mac-setup does not install `pkgs.filen-cli`, a system Node
+runtime, or a separate `filen` command. The backend cannot self-update; it is
+updated only when the checksum-pinned Filen Menubar release changes. The app
+copy validator also verifies the bundled Node helper, native keyring addon,
+runtime SBOM, and license notices against the pinned application.
 
-An older Mac may still have the former npm-global `@filen/cli`. After activation:
-
-```bash
-type -a filen
-filen --version
-```
-
-The first result must be the pinned launcher in `~/.local/bin`. Once that is
-confirmed, remove the obsolete npm-global package from the historical
-fnm-managed Node version that installed it:
+After activating this migration, verify that Home Manager removed the former
+managed launcher:
 
 ```bash
-fnm exec --using 24.18.0 npm uninstall --global @filen/cli
+test ! -e "$HOME/.local/bin/filen"
 ```
 
-If `fnm list` shows that the old global was installed under another Node
-version, use that version instead.
+A separately installed npm-global `@filen/cli` may remain elsewhere in `PATH`,
+but Filen Menubar neither discovers nor requires it. Remove it only after
+confirming that no other workflow uses the command.
+
+The bundled backend keeps a pre-existing legacy `~/.filen-cli` state directory
+when one exists; otherwise it uses
+`~/Library/Application Support/filen-cli`. On a clean install, authenticate
+through Filen Menubar's in-app Login flow. The guided provisioner protects the
+selected state directory with user-only permissions before launching the app.
 
 Private Filen sync paths and login state are intentionally outside Git. See
 [Private state](private-state.md#filen-menubar-config) for backup and restore.
