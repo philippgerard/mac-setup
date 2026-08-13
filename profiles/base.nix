@@ -10,7 +10,6 @@
     "google-chrome"
     "monocle-app"
     "otty"
-    "securesafe"
     "shottr"
     "spamsieve"
     "tailscale-app"

@@ -167,7 +167,6 @@ check from closing the parent shell.
   tmux -V
   ssh -V
   test "$(dscl . -read "/Users/$(id -un)" UserShell)" = 'UserShell: /run/current-system/sw/bin/fish'
-  /usr/bin/arch -x86_64 /usr/bin/true
 
   printf 'Automated restore verification passed.\n'
   printf 'The disposable signing-test repository is at %s\n' "$signing_test_repo"

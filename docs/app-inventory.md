@@ -10,7 +10,7 @@ The `mini` host composes:
   compiler, Cargo, formatter, linter, and language server;
 - `desktop`: external-display support and desktop menu-bar behavior;
 - `personal`: communication, news, media, archive, and document utilities;
-- `work`: individual Microsoft Office apps, Teams, Slack, and Notion;
+- `work`: individual Microsoft Office apps, Teams, and Slack;
 - `gaming`: GeForce NOW.
 
 The package lists intentionally replace Ghostty with Otty, Latest with
@@ -33,9 +33,6 @@ backend cannot self-update independently of the reviewed application release.
 It retains a pre-existing legacy `~/.filen-cli` state directory when present
 and otherwise uses the protected modern macOS path. Private sync paths restore
 from 1Password, while authentication remains an interactive in-app step.
-
-SecureSafe's vendor package requires Rosetta 2. The switch workflow installs
-Rosetta when absent before Homebrew activation.
 
 Microsoft Teams remains an explicit work-profile cask. Homebrew considers a
 cask installed from its receipt even if its application bundle was deleted. If
@@ -78,9 +75,10 @@ delete application/data directories wholesale.
 - Microsoft Defender, OneDrive, and OneNote, which are bundled by the combined
   `microsoft-office` cask but are not required here;
 - Conductor and Deliveries, which are not part of the selected baseline;
-- Barbee, Collections, Core Tunnel, HazeOver, Nova, Paperparrot, PDF Squeezer,
-  Raycast, Remind Me Faster, Replacicon, TablePlus, Trace, Whatcable,
-  WiFi Signal, and Zipic, which are no longer part of the selected baseline;
+- Barbee, Collections, Core Tunnel, HazeOver, Notion, Nova, Paperparrot,
+  PDF Squeezer, Raycast, Remind Me Faster, Replacicon, SecureSafe, TablePlus,
+  Trace, Whatcable, WiFi Signal, and Zipic, which are no longer part of the
+  selected baseline;
 - Xcode, which is installed manually from the App Store only when needed, and
   XcodeBuildMCP, which is omitted with its Xcode dependency;
 - Steam when cloud gaming is the selected restore path;

@@ -103,9 +103,6 @@ reviewed garbage collection; setup never removes them automatically.
 
 ## Activation behavior
 
-On Apple Silicon, activation installs Rosetta 2 when it is absent because some
-declared vendor packages are Intel-only. A build does not install Rosetta.
-
 The full Xcode application is intentionally omitted. Install it from the App
 Store only when needed. After reviewing an Xcode installation, complete its
 first-launch and license steps before a Homebrew operation that requires them:

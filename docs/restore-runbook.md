@@ -57,8 +57,8 @@ After the build succeeds:
 ~/.config/mac-setup/setup.sh --provision
 ```
 
-This rebuilds, activates nix-darwin, Home Manager, Homebrew, MAS applications,
-and Rosetta when required, then starts the guided private restore.
+This rebuilds, activates nix-darwin, Home Manager, Homebrew, and MAS
+applications, then starts the guided private restore.
 
 The default flow:
 

@@ -4,7 +4,6 @@
   imports = [
     ./fish.nix
     ./nix.nix
-    ./rosetta.nix
     ./system.nix
     ./homebrew.nix
   ];

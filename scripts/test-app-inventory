@@ -9,7 +9,8 @@ NIX_PACKAGE_MODULE="$REPO_ROOT/modules/home/packages.nix"
 HOMEBREW_DRY_RUN="$REPO_ROOT/scripts/homebrew-dry-run"
 
 for unwanted_declaration in \
-  core-tunnel nova pdf-squeezer raycast replacicon tableplus whatcable zipic \
+  core-tunnel notion nova pdf-squeezer raycast replacicon securesafe tableplus \
+  whatcable zipic \
   microsoft-office microsoft-defender microsoft-onedrive onedrive \
   microsoft-onenote conductor deliveries; do
   if /usr/bin/grep -Fq "\"$unwanted_declaration\"" "${PROFILE_FILES[@]}"; then

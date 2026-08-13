@@ -8,7 +8,6 @@
     "microsoft-powerpoint"
     "microsoft-teams"
     "microsoft-word"
-    "notion"
     "slack"
   ];
 }
