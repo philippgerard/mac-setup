@@ -68,13 +68,6 @@
       # Credential helper (1Password)
       credential.helper = "osxkeychain";
 
-      # URL rewrites
-      url = {
-        "ssh://git@github.com/" = {
-          insteadOf = "https://github.com/";
-        };
-      };
-
       # 1Password SSH commit signing. user.signingKey comes from the private
       # include so public configuration cannot identify the key owner.
       user.useConfigOnly = true;
@@ -154,7 +147,7 @@
   programs.gh = {
     enable = true;
     settings = {
-      git_protocol = "ssh";
+      git_protocol = "https";
       prompt = "enabled";
     };
   };

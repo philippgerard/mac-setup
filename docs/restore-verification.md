@@ -51,7 +51,8 @@ check from closing the parent shell.
   export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
   op account get >/dev/null
   ssh-add -L >/dev/null
-  git ls-remote https://github.com/philippgerard/mac-setup.git HEAD >/dev/null
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git ls-remote \
+    https://github.com/philippgerard/mac-setup.git HEAD >/dev/null
 
   for identity_file in identity.inc public-identity.inc allowed_signers; do
     identity_path="$HOME/.config/git/$identity_file"
