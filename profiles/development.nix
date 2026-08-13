@@ -7,7 +7,6 @@
     "claude"
     "codex"
     "orbstack"
-    "tableplus"
     "zed"
   ];
 

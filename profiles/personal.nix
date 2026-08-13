@@ -5,7 +5,6 @@
     "beeper"
     "imageoptim"
     "netnewswire"
-    "pdf-squeezer"
     "spotify"
   ];
 

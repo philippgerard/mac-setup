@@ -6,7 +6,6 @@
     "adguard"
     "appcleaner"
     "choosy"
-    "core-tunnel"
     "font-fira-code-nerd-font"
     "google-chrome"
     "monocle-app"

@@ -5,7 +5,7 @@
 The `mini` host composes:
 
 - `base`: security, browser, terminal, window, update, sync, and core utility apps;
-- `development`: editor, AI tools, TestFlight, OrbStack, database tooling,
+- `development`: editor, AI tools, TestFlight, OrbStack,
   the pinned Erlang/OTP 29 plus Elixir 1.20 toolchain, and the pinned Rust
   compiler, Cargo, formatter, linter, and language server;
 - `desktop`: external-display support and desktop menu-bar behavior;
@@ -77,9 +77,9 @@ delete application/data directories wholesale.
 - Microsoft Defender, OneDrive, and OneNote, which are bundled by the combined
   `microsoft-office` cask but are not required here;
 - Conductor and Deliveries, which are not part of the selected baseline;
-- Barbee, Collections, HazeOver, Paperparrot, Raycast, Remind Me Faster,
-  Replacicon, Trace, Whatcable, WiFi Signal, and Zipic, which are no longer part
-  of the selected baseline;
+- Barbee, Collections, Core Tunnel, HazeOver, Nova, Paperparrot, PDF Squeezer,
+  Raycast, Remind Me Faster, Replacicon, TablePlus, Trace, Whatcable,
+  WiFi Signal, and Zipic, which are no longer part of the selected baseline;
 - Xcode, which is installed manually from the App Store only when needed, and
   XcodeBuildMCP, which is omitted with its Xcode dependency;
 - Steam when cloud gaming is the selected restore path;
