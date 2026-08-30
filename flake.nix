@@ -65,6 +65,7 @@
 
       devShells.${system}.validation = pkgs.mkShell {
         packages = with pkgs; [
+          bash
           coreutils
           fish
           gitleaks

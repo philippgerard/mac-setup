@@ -12,6 +12,10 @@ source "$REPO_ROOT/scripts/trusted-nix"
 NIX_BIN="$(mac_setup_trusted_nix)"
 
 missing_validation_tools=()
+if ! command -v bash >/dev/null 2>&1 || \
+  ! bash -c '(( BASH_VERSINFO[0] >= 4 ))'; then
+  missing_validation_tools+=("bash>=4")
+fi
 for command_name in fish gitleaks jq plutil rg shellcheck; do
   command -v "$command_name" >/dev/null 2>&1 || \
     missing_validation_tools+=("$command_name")
@@ -61,6 +65,7 @@ bash "$REPO_ROOT/scripts/test-public-safety"
 test -x "$REPO_ROOT/scripts/test-smime-identity-restore"
 bash "$REPO_ROOT/scripts/test-smime-identity-restore"
 bash "$REPO_ROOT/scripts/test-ssh-private-state"
+bash "$REPO_ROOT/scripts/test-trusted-nix"
 bash "$REPO_ROOT/scripts/test-validation-tool-bootstrap"
 bash "$REPO_ROOT/scripts/test-zed-config"
 

@@ -7,6 +7,7 @@
     "claude"
     "codex"
     "orbstack"
+    "safari-technology-preview"
     "zed"
   ];
 

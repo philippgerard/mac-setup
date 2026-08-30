@@ -1,16 +1,24 @@
 #!/bin/bash
 
-mac_setup_trusted_nix() {
-  local launcher="/nix/var/nix/profiles/default/bin/nix"
+_mac_setup_trusted_nix_from_launcher() {
+  local launcher
   local mode
   local owner
   local target
 
-  [[ -L "$launcher" ]] || {
+  [[ $# -eq 1 ]] || {
+    echo "trusted Determinate Nix requires exactly one launcher path" >&2
+    return 2
+  }
+  launcher="$1"
+  [[ -x "$launcher" ]] || {
     echo "trusted Determinate Nix launcher is missing" >&2
     return 1
   }
-  target="$(/usr/bin/readlink "$launcher")" || {
+  # Determinate profiles may symlink the launcher itself or an enclosing
+  # directory into the immutable store. Resolve the complete fixed path before
+  # validating and returning the store executable.
+  target="$(/usr/bin/readlink -f "$launcher")" || {
     echo "trusted Determinate Nix launcher could not be resolved" >&2
     return 1
   }
@@ -32,4 +40,9 @@ mac_setup_trusted_nix() {
   }
 
   printf '%s\n' "$target"
+}
+
+mac_setup_trusted_nix() {
+  _mac_setup_trusted_nix_from_launcher \
+    "/nix/var/nix/profiles/default/bin/nix"
 }

@@ -64,6 +64,10 @@ fi
 }
 
 missing_tools=()
+if ! command -v bash >/dev/null 2>&1 || \
+  ! bash -c '(( BASH_VERSINFO[0] >= 4 ))'; then
+  missing_tools+=("bash>=4")
+fi
 for command_name in fish gitleaks jq plutil rg shellcheck; do
   command -v "$command_name" >/dev/null 2>&1 || \
     missing_tools+=("$command_name")
@@ -74,6 +78,6 @@ fi
 
 read_locked_nixpkgs
 NIX_BIN="$(mac_setup_trusted_nix)"
-validation_expression="let pkgs = import (builtins.fetchTarball { url = \"https://github.com/NixOS/nixpkgs/archive/$LOCKED_NIXPKGS_REV.tar.gz\"; sha256 = \"$LOCKED_NIXPKGS_HASH\"; }) { system = \"aarch64-darwin\"; }; in with pkgs; [ coreutils fish gitleaks jq ripgrep shellcheck ]"
+validation_expression="let pkgs = import (builtins.fetchTarball { url = \"https://github.com/NixOS/nixpkgs/archive/$LOCKED_NIXPKGS_REV.tar.gz\"; sha256 = \"$LOCKED_NIXPKGS_HASH\"; }) { system = \"aarch64-darwin\"; }; in with pkgs; [ bash coreutils fish gitleaks jq ripgrep shellcheck ]"
 
 exec "$NIX_BIN" shell --impure --expr "$validation_expression" --command "$@"

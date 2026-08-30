@@ -35,6 +35,13 @@ fi
   exit 1
 }
 
+[[ "$(/usr/bin/grep -Fh '"safari-technology-preview"' \
+  "${PROFILE_FILES[@]}" | /usr/bin/wc -l | \
+  /usr/bin/tr -d '[:space:]')" -eq 1 ]] || {
+  echo "Safari Technology Preview must be declared exactly once" >&2
+  exit 1
+}
+
 for unwanted_mas_app in \
   Barbee Collections HazeOver Paperparrot 'Remind Me Faster' Trace 'WiFi Signal' \
   'Microsoft Defender' OneDrive OneNote Conductor Deliveries Xcode; do

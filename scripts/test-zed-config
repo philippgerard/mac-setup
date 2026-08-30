@@ -21,9 +21,36 @@ BASH_BIN="$(command -v bash)"
   exit 1
 }
 
+activation_attr="$FLAKE_REF#darwinConfigurations.mini.config.home-manager.users.macuser.home.activation.configureZed.data"
+activation_context="$(
+  "$NIX_BIN" eval --json --apply 'value: builtins.getContext value' \
+    "$activation_attr"
+)"
+activation_installables=()
+while IFS=$'\t' read -r drv_path output_name; do
+  [[ "$drv_path" =~ ^/nix/store/[0-9a-z]{32}-[^/]+\.drv$ && \
+    "$output_name" =~ ^[A-Za-z0-9_-]+$ ]] || {
+    echo "Zed activation has an unexpected Nix string context" >&2
+    exit 1
+  }
+  activation_installables+=("${drv_path}^${output_name}")
+done < <(
+  jq -r '
+    to_entries[] |
+    .key as $drv |
+    .value.outputs[]? |
+    [$drv, .] |
+    @tsv
+  ' <<<"$activation_context"
+)
+[[ "${#activation_installables[@]}" -gt 0 ]] || {
+  echo "Zed activation has no realizable Nix dependencies" >&2
+  exit 1
+}
+"$NIX_BIN" build --no-link "${activation_installables[@]}"
+
 activation_script="$(
-  "$NIX_BIN" eval --raw \
-    "$FLAKE_REF#darwinConfigurations.mini.config.home-manager.users.macuser.home.activation.configureZed.data"
+  "$NIX_BIN" eval --raw "$activation_attr"
 )"
 
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-zed-test.XXXXXX")"

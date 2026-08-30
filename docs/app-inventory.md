@@ -5,7 +5,7 @@
 The `mini` host composes:
 
 - `base`: security, browser, terminal, window, update, sync, and core utility apps;
-- `development`: editor, AI tools, TestFlight, OrbStack,
+- `development`: editor, AI tools, Safari Technology Preview, TestFlight, OrbStack,
   the pinned Erlang/OTP 29 plus Elixir 1.20 toolchain, and the pinned Rust
   compiler, Cargo, formatter, linter, and language server;
 - `desktop`: external-display support and desktop menu-bar behavior;
@@ -15,6 +15,19 @@ The `mini` host composes:
 
 The package lists intentionally replace Ghostty with Otty, Latest with
 Updatest, and the old Tailscale token with `tailscale-app`.
+
+Safari Technology Preview uses Homebrew's unversioned
+[`safari-technology-preview`](https://formulae.brew.sh/cask/safari-technology-preview)
+cask. The official cask selects Apple's package for the running macOS release,
+including the separate macOS 26 and macOS 27 downloads, so this repository does
+not duplicate that changing release logic.
+Normal preview updates arrive through Software Update. Homebrew selects an OS
+variant only when it installs or reinstalls the cask, so after a major macOS
+upgrade prefer Software Update. Before a reviewed one-time reinstall, compare
+the platform-specific version from `brew info --cask safari-technology-preview`
+with [Apple's current download](https://developer.apple.com/safari/resources/);
+an individual Homebrew platform branch can lag when Apple changes its asset
+URL.
 
 The 1Password desktop app remains a Homebrew cask, while its CLI is installed
 from the pinned Nix collection so private restore helpers resolve an immutable

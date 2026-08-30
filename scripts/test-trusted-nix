@@ -1,0 +1,72 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+
+trusted_target="$(mac_setup_trusted_nix)"
+test_root="$(/usr/bin/mktemp -d \
+  "${TMPDIR:-/tmp}/mac-setup-trusted-nix-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-trusted-nix-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+# Current Determinate profiles link the enclosing bin directory into the Nix
+# store rather than making the final launcher component a symlink.
+profile_root="$test_root/profile"
+/bin/mkdir -p "$profile_root"
+/bin/ln -s "$(/usr/bin/dirname "$trusted_target")" "$profile_root/bin"
+profile_launcher="$profile_root/bin/nix"
+[[ -x "$profile_launcher" && ! -L "$profile_launcher" ]] || {
+  echo "trusted Nix test did not reproduce an intermediate symlink" >&2
+  exit 1
+}
+[[ "$(_mac_setup_trusted_nix_from_launcher "$profile_launcher")" == \
+  "$trusted_target" ]] || {
+  echo "trusted Nix rejected an immutable target through a profile symlink" >&2
+  exit 1
+}
+
+# Retain compatibility with a profile that links the launcher itself.
+direct_launcher="$test_root/nix"
+/bin/ln -s "$trusted_target" "$direct_launcher"
+[[ "$(_mac_setup_trusted_nix_from_launcher "$direct_launcher")" == \
+  "$trusted_target" ]] || {
+  echo "trusted Nix rejected a direct launcher symlink" >&2
+  exit 1
+}
+
+untrusted_launcher="$test_root/untrusted-nix"
+/usr/bin/touch "$untrusted_launcher"
+/bin/chmod 700 "$untrusted_launcher"
+if _mac_setup_trusted_nix_from_launcher \
+  "$untrusted_launcher" >/dev/null 2>&1; then
+  echo "trusted Nix accepted an executable outside the immutable store" >&2
+  exit 1
+fi
+if _mac_setup_trusted_nix_from_launcher \
+  "$test_root/missing" >/dev/null 2>&1; then
+  echo "trusted Nix accepted a missing launcher" >&2
+  exit 1
+fi
+missing_arg_status=0
+_mac_setup_trusted_nix_from_launcher >/dev/null 2>&1 || \
+  missing_arg_status=$?
+if [[ "$missing_arg_status" -ne 2 ]]; then
+  echo "trusted Nix did not reject a missing launcher argument" >&2
+  exit 1
+fi
+if _mac_setup_trusted_nix_from_launcher \
+  "$direct_launcher" extra >/dev/null 2>&1; then
+  echo "trusted Nix accepted too many launcher arguments" >&2
+  exit 1
+fi
+
+echo "trusted Determinate Nix launcher tests passed"
