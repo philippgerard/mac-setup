@@ -149,6 +149,12 @@ run_checkout --config-dir "$failed_checkout" --revision main >/dev/null
   exit 1
 }
 
+# The README's ordinary unpinned flow resolves the remote's main branch when it
+# creates a checkout; explicit --revision behavior remains covered above.
+main_checkout="$default_parent/main-default"
+run_checkout --config-dir "$main_checkout" >/dev/null
+[[ "$(/usr/bin/git -C "$main_checkout" rev-parse HEAD)" == "$second_revision" ]]
+
 malicious_python="$test_root/malicious-python"
 python_marker="$test_root/python-sitecustomize-ran"
 python_checkout="$default_parent/python-isolation"
@@ -242,9 +248,17 @@ if [[ "$(/usr/bin/grep -Fc \
   ! /usr/bin/grep -Fq \
     "/usr/bin/curl -qfsSL --proto '=https' --tlsv1.2" \
     "$REPO_ROOT/README.md" || \
-  ! /usr/bin/grep -Fq '| /bin/bash -p -s -- --revision "$revision"' \
-  "$REPO_ROOT/README.md"; then
-  echo "documented remote bootstrap does not preserve protected Bash mode" >&2
+  ! /usr/bin/grep -Fq \
+    'https://raw.githubusercontent.com/philippgerard/mac-setup/main/setup.sh' \
+    "$REPO_ROOT/README.md" || \
+  ! /usr/bin/grep -Fq '| /bin/bash -p' "$REPO_ROOT/README.md"; then
+  echo "documented main bootstrap does not preserve protected Bash mode" >&2
+  exit 1
+fi
+if /usr/bin/grep -Fq '| /bin/bash -p -s -- --revision' \
+  "$REPO_ROOT/README.md" || \
+  /usr/bin/grep -Fq "\${revision}/setup.sh" "$REPO_ROOT/README.md"; then
+  echo "documented main bootstrap still enforces a release revision pin" >&2
   exit 1
 fi
 

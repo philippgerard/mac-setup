@@ -26,7 +26,8 @@ For any future sensitive-data incident:
 4. publish from a new sanitized root commit or rewrite the affected history with a reviewed allowlist;
 5. run `scripts/check-history-safety <branch-or-commit>` against the exact history that will be published;
 6. rotate any credential that was ever committed, even if history is rewritten;
-7. update the tested bootstrap revision or release tag.
+7. publish and verify the sanitized tree on `main`; create a release tag only
+   when an exact named restore point is useful.
 
 Before every GitHub web merge, confirm that both the account's display name is
 the public repository-owner handle and its commit-email setting uses the

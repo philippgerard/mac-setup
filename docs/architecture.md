@@ -31,36 +31,51 @@ Chezmoi and other dotfile managers are intentionally not part of this design.
 
 ## Bootstrap model
 
-The public README uses a full, tested Git commit rather than a moving branch.
-That revision selects both the downloaded `setup.sh` and the repository tree
-that the script checks out.
+The public README downloads `setup.sh` from `main`, and setup checks out the
+current `main` commit. This keeps the normal fresh-Mac path simple and current
+for this owner-controlled repository. The raw script download and Git clone are
+separate reads, so a push between them can put the running script and checkout
+on different commits. That small moving-`main` window is accepted here. Setup
+records the checkout's exact `HEAD` in the ignored, mode-`0600`
+`.local/bootstrap-revision`; the record is an audit and verification aid, not
+an argument required by later setup commands.
 
-A commit cannot contain its own future SHA, so the README may be newer than the
-configuration revision in its bootstrap block. Always copy the block from the
-current public `main` README. Setup records the commit it actually used in the
-ignored, mode-`0600` `.local/bootstrap-revision`; that file is authoritative
-for the individual restore.
+An explicit `--revision <git-ref>` remains available when deliberately
+reproducing or rolling back to a branch, tag, or commit. It is optional and is
+not part of the regular bootstrap or resume flow.
 
 The default bootstrap is build-only:
 
 1. verify macOS and Apple Silicon;
-2. request the Command Line Tools when missing;
-3. install Homebrew and Determinate Nix when missing;
-4. create a transactional checkout at the requested revision;
+2. open the Command Line Tools installer when needed, wait for the tools, and
+   continue in the same process;
+3. create a transactional checkout at the current `main` commit, or at an
+   explicitly requested revision;
+4. install Homebrew interactively and install Determinate Nix when missing,
+   then wait for the Nix daemon;
 5. generate ignored local host metadata;
 6. run public-safety, syntax, and evaluation checks; and
 7. build `darwinConfigurations.mini.system` without activating it.
 
-The reviewed second run uses `setup.sh --provision` to activate the system and
-start the guided private-state restore. `--apply` activates only the public base
-and leaves `scripts/finish-setup` for later.
+The streamed bootstrap keeps its own standard input separate from Homebrew's
+prompts by attaching the installer to the controlling Terminal. Once the
+checkout exists, prerequisite failures print a local resume command that keeps
+the selected mode, forwarded options, and any non-default checkout path.
+
+The reviewed second run uses `setup.sh --provision` from the existing checkout
+to run one validation, build, and switch pass, then start the guided
+private-state restore. It does not repeat the build-only pass first. `--apply`
+activates only the public base and leaves `scripts/finish-setup` for later. An
+activation error resumes with the printed setup command; after activation
+succeeds, a private restore error resumes directly with the printed
+`scripts/finish-setup` command.
 
 ## Existing checkouts
 
 Bootstrap never silently pulls, resets, or changes a pre-existing checkout.
 With an explicit `--revision`, the checkout's `HEAD` must match that revision
 and its tracked files and index must be clean. Untracked files do not affect the
-pin check, but they are excluded from the Nix source.
+explicit-revision check, but they are excluded from the Nix source.
 
 A direct `./setup.sh --provision` without an explicit revision deliberately
 uses the current checkout as-is. When working from a non-default directory, keep
@@ -117,7 +132,7 @@ backup with the same name.
 
 macOS may require App Management permission for the terminal running Home
 Manager. This approval is intentionally manual: enable it in System Settings,
-quit and reopen the terminal, and rerun the same activation command.
+quit and reopen the terminal, and run the setup command printed with the error.
 
 Setup never executes a user-modifiable application from `/Applications` during
 privileged activation.

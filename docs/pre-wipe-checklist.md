@@ -52,7 +52,7 @@ Container and Docker volumes on this Mac are intentionally excluded.
 
 ## Final gates
 
-- [ ] The tested configuration revision is available remotely.
+- [ ] The tested configuration is pushed to `main` and available remotely.
 - [ ] The private recovery manifest has no unverified item, including the `Mac Setup Mail Accounts` document.
 - [ ] All local work and required stateful data have independent restore paths.
 - [ ] The clean-install runbook has been rehearsed without destructive cleanup.

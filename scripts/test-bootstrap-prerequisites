@@ -1,0 +1,477 @@
+#!/bin/bash
+# shellcheck disable=SC2034,SC2329 # Production functions invoke these mocks through eval.
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SETUP_SCRIPT="$REPO_ROOT/setup.sh"
+REBUILD_SCRIPT="$REPO_ROOT/scripts/rebuild"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-prerequisite-test.XXXXXX")"
+cleanup() {
+  if [[ -n "${test_root:-}" && -d "$test_root" && ! -L "$test_root" && \
+    "$test_root" == "${TMPDIR:-/tmp}"/mac-setup-prerequisite-test.* ]]; then
+    /bin/rm -rf -- "$test_root" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+fail() {
+  echo "$1" >&2
+  exit 1
+}
+
+extract_function() {
+  local function_name="$1"
+
+  /usr/bin/awk -v function_start="$function_name() {" '
+    $0 == function_start {
+      found = 1
+      in_function = 1
+    }
+    in_function {
+      print
+      opening_count = gsub(/\{/, "{")
+      closing_count = gsub(/\}/, "}")
+      depth += opening_count - closing_count
+      if (depth == 0) {
+        exit
+      }
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$SETUP_SCRIPT"
+}
+
+ensure_command_line_tools_function="$(extract_function ensure_command_line_tools)"
+ensure_homebrew_function="$(extract_function ensure_homebrew)"
+ensure_determinate_nix_function="$(extract_function ensure_determinate_nix)"
+print_setup_command_function="$(extract_function print_setup_command)"
+print_finish_setup_command_function="$(extract_function print_finish_setup_command)"
+die_function="$(extract_function die)"
+
+# A fresh machine requests Command Line Tools, waits without sleeping in the
+# test, and continues as soon as the readiness predicate changes.
+fresh_clt_trace="$test_root/fresh-clt.trace"
+(
+  eval "$ensure_command_line_tools_function"
+  COMMAND_LINE_TOOLS_POLL_SECONDS=5
+  COMMAND_LINE_TOOLS_WAIT_SECONDS=20
+  clt_ready=0
+  request_count=0
+  wait_count=0
+  info() {
+    printf 'info:%s\n' "$1" >>"$fresh_clt_trace"
+  }
+  die() {
+    printf 'die:%s\n' "$1" >>"$fresh_clt_trace"
+    exit 1
+  }
+  developer_tools_ready() {
+    [[ "$clt_ready" -eq 1 ]]
+  }
+  graphical_session_ready() { return 0; }
+  request_command_line_tools() {
+    request_count=$((request_count + 1))
+    printf '%s\n' request >>"$fresh_clt_trace"
+  }
+  wait_for_command_line_tools_tick() {
+    wait_count=$((wait_count + 1))
+    printf '%s\n' wait >>"$fresh_clt_trace"
+    if [[ "$wait_count" -eq 2 ]]; then
+      clt_ready=1
+    fi
+  }
+
+  ensure_command_line_tools
+  printf '%s\n' continued >>"$fresh_clt_trace"
+  [[ "$request_count" -eq 1 && "$wait_count" -eq 2 ]]
+)
+[[ "$(/usr/bin/grep -Fc request "$fresh_clt_trace")" -eq 1 ]]
+[[ "$(/usr/bin/grep -Fc wait "$fresh_clt_trace")" -eq 2 ]]
+[[ "$(/usr/bin/tail -n 1 "$fresh_clt_trace")" == continued ]]
+
+# xcode-select reports a nonzero status when an installer request is already
+# open. That status is advisory: readiness still controls whether setup moves
+# forward.
+open_installer_trace="$test_root/open-installer.trace"
+(
+  eval "$ensure_command_line_tools_function"
+  COMMAND_LINE_TOOLS_POLL_SECONDS=5
+  COMMAND_LINE_TOOLS_WAIT_SECONDS=20
+  clt_ready=0
+  info() {
+    printf 'info:%s\n' "$1" >>"$open_installer_trace"
+  }
+  die() {
+    printf 'die:%s\n' "$1" >>"$open_installer_trace"
+    exit 1
+  }
+  developer_tools_ready() {
+    [[ "$clt_ready" -eq 1 ]]
+  }
+  graphical_session_ready() { return 0; }
+  request_command_line_tools() {
+    printf '%s\n' request-nonzero >>"$open_installer_trace"
+    return 9
+  }
+  wait_for_command_line_tools_tick() {
+    printf '%s\n' wait >>"$open_installer_trace"
+    clt_ready=1
+  }
+
+  ensure_command_line_tools
+  printf '%s\n' continued >>"$open_installer_trace"
+)
+/usr/bin/grep -Fq 'info:The installer may already be open' "$open_installer_trace"
+[[ "$(/usr/bin/grep -Fc request-nonzero "$open_installer_trace")" -eq 1 ]]
+[[ "$(/usr/bin/tail -n 1 "$open_installer_trace")" == continued ]]
+
+# An already prepared Mac must not reopen the installer or enter the wait loop.
+(
+  eval "$ensure_command_line_tools_function"
+  COMMAND_LINE_TOOLS_POLL_SECONDS=5
+  COMMAND_LINE_TOOLS_WAIT_SECONDS=20
+  info() { :; }
+  die() { fail "preinstalled Command Line Tools reached die"; }
+  developer_tools_ready() { return 0; }
+  graphical_session_ready() { return 0; }
+  request_command_line_tools() {
+    fail "preinstalled Command Line Tools reopened the installer"
+  }
+  wait_for_command_line_tools_tick() {
+    fail "preinstalled Command Line Tools entered the wait loop"
+  }
+
+  ensure_command_line_tools
+)
+
+# A bounded wait must fail with a useful error and must not perform a real
+# sleep. The mock also proves the timeout advances by the configured interval.
+clt_timeout_output="$test_root/clt-timeout.output"
+if (
+  eval "$ensure_command_line_tools_function"
+  COMMAND_LINE_TOOLS_POLL_SECONDS=2
+  COMMAND_LINE_TOOLS_WAIT_SECONDS=4
+  wait_count=0
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  developer_tools_ready() { return 1; }
+  graphical_session_ready() { return 0; }
+  request_command_line_tools() { return 0; }
+  wait_for_command_line_tools_tick() {
+    wait_count=$((wait_count + 1))
+    [[ "$wait_count" -le 2 ]] || fail "Command Line Tools timeout waited too many times"
+  }
+
+  ensure_command_line_tools
+) >"$clt_timeout_output" 2>&1; then
+  fail "Command Line Tools timeout unexpectedly succeeded"
+fi
+/usr/bin/grep -Fq 'Command Line Tools did not become ready' "$clt_timeout_output"
+
+clt_session_output="$test_root/clt-session.output"
+if (
+  eval "$ensure_command_line_tools_function"
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  developer_tools_ready() { return 1; }
+  graphical_session_ready() { return 1; }
+  request_command_line_tools() {
+    fail "non-graphical setup attempted to open the Command Line Tools installer"
+  }
+  wait_for_command_line_tools_tick() {
+    fail "non-graphical setup entered the Command Line Tools wait loop"
+  }
+
+  ensure_command_line_tools
+) >"$clt_session_output" 2>&1; then
+  fail "Command Line Tools setup accepted a non-graphical session"
+fi
+/usr/bin/grep -Fq 'requires a logged-in graphical macOS session' \
+  "$clt_session_output"
+
+# Homebrew's ready path is a no-op; its missing path installs once and verifies
+# the resulting executable before continuing.
+(
+  eval "$ensure_homebrew_function"
+  info() { :; }
+  die() { fail "ready Homebrew reached die"; }
+  homebrew_ready() { return 0; }
+  install_homebrew() { fail "ready Homebrew was reinstalled"; }
+
+  ensure_homebrew
+)
+
+(
+  eval "$ensure_homebrew_function"
+  brew_ready=0
+  install_count=0
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  homebrew_ready() {
+    [[ "$brew_ready" -eq 1 ]]
+  }
+  install_homebrew() {
+    install_count=$((install_count + 1))
+    brew_ready=1
+  }
+
+  ensure_homebrew
+  [[ "$install_count" -eq 1 ]]
+)
+
+homebrew_error_output="$test_root/homebrew-error.output"
+if (
+  eval "$ensure_homebrew_function"
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  homebrew_ready() { return 1; }
+  install_homebrew() { return 0; }
+
+  ensure_homebrew
+) >"$homebrew_error_output" 2>&1; then
+  fail "Homebrew accepted an installer run without a usable executable"
+fi
+/usr/bin/grep -Fq 'installer completed without a usable /opt/homebrew/bin/brew' \
+  "$homebrew_error_output"
+
+# Determinate Nix likewise skips a complete installation, installs exactly once
+# when the launcher is absent, and waits only for daemon readiness.
+(
+  eval "$ensure_determinate_nix_function"
+  NIX_POLL_SECONDS=2
+  NIX_WAIT_SECONDS=10
+  info() { :; }
+  die() { fail "ready Determinate Nix reached die"; }
+  nix_launcher_present() { return 0; }
+  trusted_nix_launcher() { printf '%s\n' /nix/store/test/bin/nix; }
+  nix_ready() { return 0; }
+  install_determinate_nix() { fail "ready Determinate Nix was reinstalled"; }
+  wait_for_nix_tick() { fail "ready Determinate Nix entered the wait loop"; }
+
+  ensure_determinate_nix
+)
+
+(
+  eval "$ensure_determinate_nix_function"
+  NIX_POLL_SECONDS=2
+  NIX_WAIT_SECONDS=10
+  launcher_present=0
+  daemon_ready=0
+  install_count=0
+  wait_count=0
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  nix_launcher_present() {
+    [[ "$launcher_present" -eq 1 ]]
+  }
+  trusted_nix_launcher() { printf '%s\n' /nix/store/test/bin/nix; }
+  nix_ready() {
+    [[ "$launcher_present" -eq 1 && "$daemon_ready" -eq 1 ]]
+  }
+  install_determinate_nix() {
+    install_count=$((install_count + 1))
+    launcher_present=1
+  }
+  wait_for_nix_tick() {
+    wait_count=$((wait_count + 1))
+    daemon_ready=1
+  }
+
+  ensure_determinate_nix
+  [[ "$install_count" -eq 1 && "$wait_count" -eq 1 ]]
+)
+
+nix_launcher_error_output="$test_root/nix-launcher-error.output"
+if (
+  eval "$ensure_determinate_nix_function"
+  NIX_POLL_SECONDS=2
+  NIX_WAIT_SECONDS=10
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  nix_launcher_present() { return 1; }
+  trusted_nix_launcher() { return 1; }
+  nix_ready() { return 1; }
+  install_determinate_nix() { return 0; }
+  wait_for_nix_tick() { fail "missing Nix launcher reached daemon wait"; }
+
+  ensure_determinate_nix
+) >"$nix_launcher_error_output" 2>&1; then
+  fail "Determinate Nix accepted an installation without its launcher"
+fi
+/usr/bin/grep -Fq 'installer completed without the expected Nix launcher' \
+  "$nix_launcher_error_output"
+
+nix_trust_error_output="$test_root/nix-trust-error.output"
+if (
+  eval "$ensure_determinate_nix_function"
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  nix_launcher_present() { return 0; }
+  trusted_nix_launcher() { return 1; }
+  nix_ready() { fail "untrusted Nix launcher was executed"; }
+  install_determinate_nix() { fail "present Nix launcher triggered an install"; }
+  wait_for_nix_tick() { fail "untrusted Nix launcher reached daemon wait"; }
+
+  ensure_determinate_nix
+) >"$nix_trust_error_output" 2>&1; then
+  fail "Determinate Nix accepted an untrusted launcher"
+fi
+/usr/bin/grep -Fq 'launcher failed its ownership, permission' \
+  "$nix_trust_error_output"
+
+nix_timeout_output="$test_root/nix-timeout.output"
+if (
+  eval "$ensure_determinate_nix_function"
+  NIX_POLL_SECONDS=2
+  NIX_WAIT_SECONDS=4
+  wait_count=0
+  info() { :; }
+  die() {
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  nix_launcher_present() { return 0; }
+  trusted_nix_launcher() { printf '%s\n' /nix/store/test/bin/nix; }
+  nix_ready() { return 1; }
+  install_determinate_nix() { fail "present Nix launcher triggered an install"; }
+  wait_for_nix_tick() {
+    wait_count=$((wait_count + 1))
+    [[ "$wait_count" -le 2 ]] || fail "Nix timeout waited too many times"
+  }
+
+  ensure_determinate_nix
+) >"$nix_timeout_output" 2>&1; then
+  fail "Nix daemon timeout unexpectedly succeeded"
+fi
+/usr/bin/grep -Fq 'daemon did not become ready within one minute' \
+  "$nix_timeout_output"
+
+# Once checkout exists, every failure prints a shell-safe command that preserves
+# the exact revision, non-default config directory, mode, and forwarded options.
+resume_output="$test_root/resume.output"
+if (
+  eval "$print_setup_command_function"
+  eval "$die_function"
+  HOME="/test-home"
+  CONFIG_DIR="/test-home/Library/Application Support/mac setup"
+  REVISION_EXPLICIT=1
+  REVISION="release/test-1"
+  APPLY=1
+  PROVISION=1
+  FINISH_SETUP_ARGS=(--mail-account "work mail" --skip-gpg)
+  CHECKOUT_READY=1
+
+  die "synthetic resumable failure"
+) >"$resume_output" 2>&1; then
+  fail "production die helper unexpectedly returned"
+fi
+expected_resume_command='  /test-home/Library/Application\ Support/mac\ setup/setup.sh --revision release/test-1 --config-dir /test-home/Library/Application\ Support/mac\ setup --provision -- --mail-account work\ mail --skip-gpg'
+/usr/bin/grep -Fxq '[ERROR] synthetic resumable failure' "$resume_output"
+/usr/bin/grep -Fxq 'Resume safely with:' "$resume_output"
+/usr/bin/grep -Fxq "$expected_resume_command" "$resume_output"
+
+# The ordinary main-based flow remains unpinned in follow-up commands. An
+# explicit --revision still receives the exact preserving behavior above.
+default_follow_up_output="$test_root/default-follow-up.output"
+(
+  eval "$print_setup_command_function"
+  HOME="/test-home"
+  CONFIG_DIR="/test-home/.config/mac-setup"
+  REVISION_EXPLICIT=0
+  REVISION="main"
+  APPLY=0
+  PROVISION=0
+  FINISH_SETUP_ARGS=()
+
+  print_setup_command provision
+) >"$default_follow_up_output"
+/usr/bin/grep -Fxq \
+  '  /test-home/.config/mac-setup/setup.sh --provision' \
+  "$default_follow_up_output"
+if /usr/bin/grep -Fq -- '--revision' "$default_follow_up_output"; then
+  fail "default main follow-up unexpectedly forced a revision pin"
+fi
+
+# macOS Bash 3.2 treats an empty array expansion as an unbound variable under
+# nounset. The ordinary no-options private-restore command must still print.
+empty_finish_resume="$test_root/empty-finish-resume.output"
+(
+  eval "$print_finish_setup_command_function"
+  CONFIG_DIR="/test-home/.config/mac-setup"
+  FINISH_SETUP_ARGS=()
+  print_finish_setup_command
+) >"$empty_finish_resume"
+/usr/bin/grep -Fxq \
+  '  /test-home/.config/mac-setup/scripts/finish-setup' \
+  "$empty_finish_resume"
+
+# Setup delegates exactly one rebuild for each public mode: build by default,
+# switch for both --apply and --provision. The rebuild helper owns validation
+# and its own build, so an unconditional setup-level pre-build would duplicate
+# the expensive work.
+# shellcheck disable=SC2016 # Match the literal production command.
+[[ "$(/usr/bin/grep -Fc '"$CONFIG_DIR/scripts/rebuild" build' "$SETUP_SCRIPT")" -eq 1 ]] || {
+  echo "setup must dispatch exactly one build-mode rebuild" >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match the literal production command.
+[[ "$(/usr/bin/grep -Fc '"$CONFIG_DIR/scripts/rebuild" switch' "$SETUP_SCRIPT")" -eq 1 ]] || {
+  echo "setup must dispatch exactly one switch-mode rebuild" >&2
+  exit 1
+}
+apply_option_block="$(/usr/bin/sed -n '/^[[:space:]]*--apply)/,/^[[:space:]]*;;/p' "$SETUP_SCRIPT")"
+provision_option_block="$(/usr/bin/sed -n '/^[[:space:]]*--provision)/,/^[[:space:]]*;;/p' "$SETUP_SCRIPT")"
+/usr/bin/grep -Fq 'APPLY=1' <<<"$apply_option_block"
+/usr/bin/grep -Fq 'APPLY=1' <<<"$provision_option_block"
+/usr/bin/grep -Fq 'PROVISION=1' <<<"$provision_option_block"
+
+# Piped bootstrap must give Homebrew the controlling terminal, invoke current
+# Determinate syntax, establish the checkout before vendor installers, and keep
+# build result links inside the repository regardless of the caller's directory.
+/usr/bin/grep -Fq 'INTERACTIVE=1' "$SETUP_SCRIPT"
+# shellcheck disable=SC2016 # Match the literal installer variable.
+/usr/bin/grep -Fq '/bin/bash -p -c "$installer" </dev/tty' "$SETUP_SCRIPT"
+/usr/bin/grep -Fq '/bin/sh -s -- install --no-confirm' "$SETUP_SCRIPT"
+/usr/bin/grep -Fq 'trusted_nix_launcher >/dev/null' "$SETUP_SCRIPT"
+if /usr/bin/grep -Fq 'brew shellenv' "$SETUP_SCRIPT"; then
+  fail "setup still mutates its shell with Homebrew environment output"
+fi
+checkout_stage_line="$(/usr/bin/grep -nF 'Step 2 of 5: preparing' "$SETUP_SCRIPT" | \
+  /usr/bin/cut -d: -f1)"
+homebrew_stage_line="$(/usr/bin/grep -nF 'Step 3 of 5: checking Homebrew' "$SETUP_SCRIPT" | \
+  /usr/bin/cut -d: -f1)"
+nix_stage_line="$(/usr/bin/grep -nF 'Step 4 of 5: checking Determinate Nix' "$SETUP_SCRIPT" | \
+  /usr/bin/cut -d: -f1)"
+[[ "$checkout_stage_line" -lt "$homebrew_stage_line" && \
+  "$homebrew_stage_line" -lt "$nix_stage_line" ]] || \
+  fail "bootstrap does not establish its checkout before vendor installers"
+# shellcheck disable=SC2016 # Match the literal controlled working directory.
+/usr/bin/grep -Fq 'cd "$REPO_ROOT"' "$REBUILD_SCRIPT"
+
+echo "bootstrap prerequisite and resume tests passed"

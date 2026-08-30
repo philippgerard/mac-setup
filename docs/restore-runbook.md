@@ -6,7 +6,7 @@ alternative flows, macOS approvals, and recovery when a step is interrupted.
 ## Before erasing
 
 1. Complete the [pre-wipe checklist](pre-wipe-checklist.md).
-2. Push the tested configuration revision and its `flake.lock`.
+2. Push the tested configuration and its `flake.lock` to `main`.
 3. Verify a recent Time Machine backup by browsing it and restoring a test
    file.
 4. Push or independently archive every local Git change and branch.
@@ -34,31 +34,41 @@ wipe gate.
 The setup supports Apple Silicon only. The full Xcode application is not part
 of the default stack.
 
-## Build the tested revision
+## Build the current configuration
 
-Use the exact revision-pinned block from the current public README. The first
-run installs or requests prerequisites, creates `~/.config/mac-setup`,
-validates the checkout, and builds without activation.
+Use the bootstrap block from the current public README. It downloads setup from
+`main`, checks the Command Line Tools, creates `~/.config/mac-setup`, installs
+the remaining prerequisites, validates the checkout, and builds without
+activation.
 
-If Command Line Tools are missing, setup opens Apple's installer and exits.
-Finish the installer and rerun the same bootstrap block.
+If Command Line Tools are missing, setup opens Apple's installer and waits for
+them to become usable. Finish the installer and leave Terminal open; the same
+process continues automatically. If the installer is cancelled or the wait
+times out before the checkout exists, repeat the same bootstrap block.
 
-If Determinate Nix was installed but is not yet visible to the current shell,
-restart Terminal and rerun the same block.
+Once the Command Line Tools are ready, setup creates a transactional checkout of
+the current `main` commit before installing Homebrew or Determinate Nix. The
+Homebrew installer remains interactive through the Terminal even though the
+outer bootstrap arrived over a pipe. Follow its prompts. Setup also waits for
+the Nix daemon to become ready, so restarting Terminal just to expose Nix is
+unnecessary. A later prerequisite failure prints an exact local command; use
+that command to resume.
 
-The revision pin and transactional checkout behavior are explained in
+The moving-`main` bootstrap, recorded audit revision, optional explicit
+`--revision`, and transactional checkout behavior are explained in
 [Architecture and bootstrap safety](architecture.md).
 
 ## Provision the Mac
 
-After the build succeeds:
+After the build succeeds, run:
 
 ```bash
-~/.config/mac-setup/setup.sh --provision
+"$HOME/.config/mac-setup/setup.sh" --provision
 ```
 
-This rebuilds, activates nix-darwin, Home Manager, Homebrew, and MAS
-applications, then starts the guided private restore.
+This performs one validated build-and-switch pass for nix-darwin, Home Manager,
+Homebrew, and MAS applications, then starts the guided private restore. It does
+not run a separate build pass before the switch.
 
 The default flow:
 
@@ -76,9 +86,13 @@ The default flow:
 9. protects the bundled backend's local state and launches Filen Menubar; and
 10. directs authentication to the app's Login flow when needed.
 
-The command is resumable. Rerun the same `--provision` command after an
-interrupted approval or sign-in, unless setup specifically asks for
-`--update-profiles` after detecting a different installed profile.
+The two phases have different resume commands. If base activation fails, rerun
+the exact setup command printed with the error. If an approval or sign-in
+interrupts the guided private restore after activation, setup prints the exact
+`scripts/finish-setup` command, including forwarded account or vault options;
+run that command instead of provisioning again. When a different installed
+profile is detected, add `--update-profiles` to that private-restore command
+after reviewing the migration notes.
 
 ## Required approvals
 
@@ -101,9 +115,8 @@ macOS and vendors intentionally keep these steps interactive:
 
 If Home Manager stops at `checkAppManagementPermission`, enable the terminal in
 **System Settings > Privacy & Security > App Management**, quit and reopen that
-terminal, then rerun
-`~/.config/mac-setup/setup.sh --provision`. The failed activation stops before
-Home Manager changes user files.
+terminal, then run the setup command printed with the error. The failed
+activation stops before Home Manager changes user files.
 
 Other privacy permissions such as Full Disk Access, Accessibility, Input
 Monitoring, Screen Recording, microphone, camera, notifications, Automation,
@@ -121,7 +134,7 @@ The first explicit `--mail-account` replaces the `personal-mail` default.
 Repeat it for every account wanted:
 
 ```bash
-~/.config/mac-setup/setup.sh --provision -- \
+"$HOME/.config/mac-setup/setup.sh" --provision -- \
   --mail-account personal-mail --mail-account work-mail
 ```
 
@@ -131,7 +144,7 @@ The private restore uses the `Mac Setup` vault by default. Options after `--`
 can select a 1Password account or intentionally override that vault:
 
 ```bash
-~/.config/mac-setup/setup.sh --provision -- \
+"$HOME/.config/mac-setup/setup.sh" --provision -- \
   --op-account account-shorthand --vault 'Vault Name'
 ```
 
@@ -142,7 +155,7 @@ variables, and no private vault or item ID belongs in this repository.
 ### Activate only the public base
 
 ```bash
-~/.config/mac-setup/setup.sh --apply
+"$HOME/.config/mac-setup/setup.sh" --apply
 ```
 
 This activates the base and opens the iCloud restrictions profile if needed.
@@ -164,7 +177,7 @@ If a default 1Password backup item does not exist, skip that component rather
 than weakening the restore:
 
 ```bash
-~/.config/mac-setup/setup.sh --provision -- \
+"$HOME/.config/mac-setup/setup.sh" --provision -- \
   --skip-gpg --skip-filen
 ```
 

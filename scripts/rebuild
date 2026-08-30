@@ -11,6 +11,7 @@ source "$REPO_ROOT/scripts/trusted-path"
 mac_setup_harden_environment
 # shellcheck source=scripts/trusted-nix
 source "$REPO_ROOT/scripts/trusted-nix"
+cd "$REPO_ROOT"
 
 NIX_BIN="$(mac_setup_trusted_nix)"
 EXPECTED_USERNAME="$(/usr/bin/id -un)"
