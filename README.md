@@ -19,41 +19,50 @@ Before starting:
 
 ### 1. Install and build
 
-Open Terminal and paste this tested, revision-pinned bootstrap:
+Open Terminal and paste:
 
 ```bash
-revision='037056b40b9633eaa2e3f8b16e52757e90dbe658'
 /usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 \
-  "https://raw.githubusercontent.com/philippgerard/mac-setup/${revision}/setup.sh" \
-  | /bin/bash -p -s -- --revision "$revision"
+  https://raw.githubusercontent.com/philippgerard/mac-setup/main/setup.sh \
+  | /bin/bash -p
 ```
 
-This requests the Command Line Tools and installs Homebrew and Determinate Nix
-when needed, checks out the repository at `~/.config/mac-setup`, validates it,
-and builds the configuration. It does not activate the build yet.
+This checks the Command Line Tools, creates a transactional checkout of the
+current `main` commit at `~/.config/mac-setup`, installs Homebrew and Determinate
+Nix when needed, validates the checkout, and builds the configuration. It does
+not activate the build yet. Setup records the exact commit it checked out in
+`.local/bootstrap-revision` for later auditing.
 
-If macOS opens the Command Line Tools installer, finish it and run the same
-bootstrap block again.
+If macOS opens the Command Line Tools installer, finish it and leave Terminal
+open; setup waits and continues automatically. The Homebrew installer remains
+interactive even though the outer bootstrap is piped, so follow its Terminal
+prompts. After the checkout exists, any Homebrew or Nix failure prints an exact
+local command to resume. Setup waits for the Nix daemon itself; a Terminal
+restart is not part of the normal flow.
 
 ### 2. Activate and restore
 
-After the build succeeds and its changes look right:
+After the build succeeds and its changes look right, run:
 
 ```bash
-~/.config/mac-setup/setup.sh --provision
+"$HOME/.config/mac-setup/setup.sh" --provision
 ```
 
-Follow the guided prompts. This activates the system, connects 1Password,
-restores Git identity, personal Mail and configured DAV services, checks and
-restores any missing declared S/MIME identities in the login keychain, restores
-legacy GPG keys and Filen Menubar configuration, launches Filen Menubar, and
-opens the macOS profiles that require approval. Filen authentication uses the
-application's in-app Login flow when needed.
+Provisioning validates, builds, and switches the configuration in one pass,
+then starts the guided prompts. These connect 1Password, restore Git identity,
+personal Mail and configured DAV services, check and restore any missing
+declared S/MIME identities in the login keychain, restore legacy GPG keys and
+Filen Menubar configuration, launch Filen Menubar, and open the macOS profiles
+that require approval. Filen authentication uses the application's in-app Login
+flow when needed.
 
-The flow is resumable. If macOS asks for App Management permission, enable the
-terminal in **System Settings > Privacy & Security > App Management**, quit and
-reopen Terminal, then run the same `--provision` command again. The same rule
-applies if a profile approval or sign-in is interrupted.
+The flow is resumable. If activation stops for App Management permission,
+enable the terminal in **System Settings > Privacy & Security > App
+Management**, quit and reopen Terminal, then run the setup command printed with
+the error. Once base activation has completed, an interrupted profile approval
+or sign-in resumes only the private restore; run the exact
+`scripts/finish-setup` command printed with that error instead of provisioning
+again.
 
 That is the regular fresh-Mac setup.
 
@@ -63,7 +72,7 @@ Provisioning selects only `personal-mail` by default. To add another saved
 account on this Mac, list every account you want:
 
 ```bash
-~/.config/mac-setup/setup.sh --provision -- \
+"$HOME/.config/mac-setup/setup.sh" --provision -- \
   --mail-account personal-mail --mail-account work-mail
 ```
 
@@ -115,7 +124,7 @@ Homebrew and Mac App Store application removal is never automatic. Review
 - [Private state](docs/private-state.md) — 1Password items, Git/GPG identity,
   SSH hosts, and backup boundaries
 - [Architecture and bootstrap safety](docs/architecture.md) — repository layout,
-  revision pinning, source filtering, and activation design
+  checkout and resume safety, source filtering, and activation design
 - [Maintenance](docs/maintenance.md) — updates, Topgrade, Homebrew, and mutable
   application settings
 - [Post-install verification](docs/restore-verification.md) — thorough automated

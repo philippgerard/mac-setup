@@ -32,7 +32,7 @@ check from closing the parent shell.
     eval "$(/opt/homebrew/bin/brew shellenv)"
   fi
 
-  # 1. Confirm the immutable checkout and public repository safety.
+  # 1. Confirm the recorded checkout revision and public repository safety.
   test "$(git rev-parse HEAD)" = "$expected_revision"
   test -z "$(git status --porcelain)"
   scripts/validate

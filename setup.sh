@@ -40,6 +40,11 @@ APPLY=0
 PROVISION=0
 FINISH_SETUP_ARGS=()
 TEST_CHECKOUT_ONLY="${MAC_SETUP_TEST_CHECKOUT_ONLY:-0}"
+COMMAND_LINE_TOOLS_POLL_SECONDS=5
+COMMAND_LINE_TOOLS_WAIT_SECONDS=7200
+NIX_POLL_SECONDS=2
+NIX_WAIT_SECONDS=60
+CHECKOUT_READY=0
 
 usage() {
   cat <<'EOF'
@@ -53,10 +58,12 @@ Options:
   --apply              Activate only after the build succeeds.
   --provision          Activate, then run the guided private-state restore.
                        Use this for the second, reviewed fresh-machine run.
-  --revision <git-ref> Clone a tested branch, tag, or commit (default: main).
+  --revision <git-ref> Use a specific branch, tag, or commit (default: main).
   --config-dir <path>  Override the checkout directory.
   --                    Forward all remaining options to scripts/finish-setup.
                         This is valid only together with --provision.
+                        Preview that step directly with
+                        scripts/finish-setup --dry-run instead.
   -h, --help           Show this help.
 EOF
 }
@@ -105,9 +112,82 @@ if [[ "${#FINISH_SETUP_ARGS[@]}" -gt 0 && "$PROVISION" -ne 1 ]]; then
   usage >&2
   exit 2
 fi
+if [[ "${#FINISH_SETUP_ARGS[@]}" -gt 0 ]]; then
+  for finish_setup_argument in "${FINISH_SETUP_ARGS[@]}"; do
+    if [[ "$finish_setup_argument" == "--dry-run" ]]; then
+      echo "setup does not forward --dry-run after activation" >&2
+      echo "preview the private restore directly with scripts/finish-setup --dry-run" >&2
+      exit 2
+    fi
+  done
+fi
 
 info() { printf '[INFO] %s\n' "$1"; }
-die() { printf '[ERROR] %s\n' "$1" >&2; exit 1; }
+
+print_setup_command() {
+  local requested_mode="${1:-current}"
+  local argument
+
+  printf '  %q' "$CONFIG_DIR/setup.sh"
+  if [[ "$REVISION_EXPLICIT" -eq 1 ]]; then
+    printf ' --revision %q' "$REVISION"
+  fi
+  if [[ "$CONFIG_DIR" != "$HOME/.config/mac-setup" ]]; then
+    printf ' --config-dir %q' "$CONFIG_DIR"
+  fi
+  case "$requested_mode" in
+    current)
+      if [[ "$PROVISION" -eq 1 ]]; then
+        printf ' --provision'
+      elif [[ "$APPLY" -eq 1 ]]; then
+        printf ' --apply'
+      fi
+      ;;
+    provision) printf ' --provision' ;;
+    apply) printf ' --apply' ;;
+    build) ;;
+    *) return 2 ;;
+  esac
+  if [[ "${#FINISH_SETUP_ARGS[@]}" -gt 0 && \
+    "$requested_mode" != "build" && "$requested_mode" != "apply" ]]; then
+    printf ' --'
+    for argument in "${FINISH_SETUP_ARGS[@]}"; do
+      printf ' %q' "$argument"
+    done
+  fi
+  printf '\n'
+}
+
+print_finish_setup_command() {
+  local argument
+
+  printf '  %q' "$CONFIG_DIR/scripts/finish-setup"
+  if [[ "${#FINISH_SETUP_ARGS[@]}" -gt 0 ]]; then
+    for argument in "${FINISH_SETUP_ARGS[@]}"; do
+      printf ' %q' "$argument"
+    done
+  fi
+  printf '\n'
+}
+
+die() {
+  printf '[ERROR] %s\n' "$1" >&2
+  if [[ "$CHECKOUT_READY" -eq 1 ]]; then
+    printf '%s\n' 'Resume safely with:' >&2
+    print_setup_command current >&2
+  fi
+  exit 1
+}
+
+unexpected_failure() {
+  local status="$1"
+
+  trap - ERR
+  printf '[ERROR] Setup stopped unexpectedly with status %s.\n' "$status" >&2
+  printf '%s\n' 'Resume safely with:' >&2
+  print_setup_command current >&2
+  exit "$status"
+}
 
 safe_git() {
   /usr/bin/env -i \
@@ -454,6 +534,160 @@ ensure_config_checkout() {
   fi
 }
 
+developer_tools_ready() {
+  local developer_dir
+
+  developer_dir="$(/usr/bin/xcode-select -p 2>/dev/null)" || return 1
+  [[ "$developer_dir" == /* && -d "$developer_dir" ]] || return 1
+  /usr/bin/xcrun --find git >/dev/null 2>&1
+}
+
+request_command_line_tools() {
+  /usr/bin/xcode-select --install
+}
+
+graphical_session_ready() {
+  [[ "$(/bin/launchctl managername 2>/dev/null)" == "Aqua" ]]
+}
+
+wait_for_command_line_tools_tick() {
+  /bin/sleep "$COMMAND_LINE_TOOLS_POLL_SECONDS"
+}
+
+ensure_command_line_tools() {
+  local request_status=0
+  local waited_seconds=0
+
+  if developer_tools_ready; then
+    info "Command Line Tools are ready."
+    return
+  fi
+
+  graphical_session_ready || \
+    die "Command Line Tools installation requires a logged-in graphical macOS session. Open Terminal on the Mac and repeat the bootstrap command."
+
+  info "Opening Apple's Command Line Tools installer."
+  request_command_line_tools || request_status=$?
+  if [[ "$request_status" -ne 0 ]]; then
+    info "The installer may already be open; waiting for the tools to become ready."
+  fi
+  info "Finish the installer and leave Terminal open; setup will continue automatically."
+  info "Press Control-C to stop if you cancel the installer."
+
+  while ! developer_tools_ready; do
+    if [[ "$waited_seconds" -ge "$COMMAND_LINE_TOOLS_WAIT_SECONDS" ]]; then
+      die "Command Line Tools did not become ready within two hours. Repeat the same bootstrap command to resume."
+    fi
+    wait_for_command_line_tools_tick
+    waited_seconds=$((waited_seconds + COMMAND_LINE_TOOLS_POLL_SECONDS))
+  done
+
+  info "Command Line Tools installation completed; continuing setup."
+}
+
+homebrew_ready() {
+  [[ -x /opt/homebrew/bin/brew ]] && \
+    /opt/homebrew/bin/brew --version >/dev/null 2>&1
+}
+
+install_homebrew() {
+  local installer
+
+  [[ -r /dev/tty && -w /dev/tty ]] || \
+    die "Homebrew installation requires an interactive Terminal."
+  info "Installing Homebrew from the official installer."
+  installer="$(/usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 \
+    --retry 3 https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || \
+    die "Could not download the Homebrew installer."
+  /usr/bin/env -i \
+    HOME="$HOME" \
+    USER="$USERNAME" \
+    LOGNAME="$USERNAME" \
+    PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    TMPDIR=/tmp \
+    TERM="${TERM:-dumb}" \
+    SHELL=/bin/bash \
+    INTERACTIVE=1 \
+    /bin/bash -p -c "$installer" </dev/tty || \
+    die "Homebrew installation did not complete."
+}
+
+ensure_homebrew() {
+  if homebrew_ready; then
+    info "Homebrew is ready."
+    return
+  fi
+
+  install_homebrew
+  homebrew_ready || \
+    die "The Homebrew installer completed without a usable /opt/homebrew/bin/brew."
+  info "Homebrew installation completed."
+}
+
+nix_launcher_present() {
+  [[ -x "$NIX_LAUNCHER" ]]
+}
+
+trusted_nix_launcher() (
+  # shellcheck source=scripts/trusted-nix
+  source "$CONFIG_DIR/scripts/trusted-nix"
+  mac_setup_trusted_nix
+)
+
+nix_ready() {
+  local nix_bin
+
+  nix_bin="$(trusted_nix_launcher 2>/dev/null)" || return 1
+  "$nix_bin" store info --store daemon >/dev/null 2>&1
+}
+
+install_determinate_nix() {
+  [[ -r /dev/tty && -w /dev/tty ]] || \
+    die "Determinate Nix installation requires an interactive Terminal."
+  info "Installing Determinate Nix from the official installer."
+  if ! /usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 \
+    --retry 3 https://install.determinate.systems/nix | \
+    /usr/bin/env -i \
+      HOME="$HOME" \
+      USER="$USERNAME" \
+      LOGNAME="$USERNAME" \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+      TMPDIR=/tmp \
+      TERM="${TERM:-dumb}" \
+      SHELL=/bin/sh \
+      /bin/sh -s -- install --no-confirm; then
+    die "Determinate Nix installation did not complete."
+  fi
+}
+
+wait_for_nix_tick() {
+  /bin/sleep "$NIX_POLL_SECONDS"
+}
+
+ensure_determinate_nix() {
+  local waited_seconds=0
+
+  if ! nix_launcher_present; then
+    install_determinate_nix
+  fi
+  nix_launcher_present || \
+    die "The Determinate installer completed without the expected Nix launcher."
+  trusted_nix_launcher >/dev/null || \
+    die "The Determinate Nix launcher failed its ownership, permission, or immutable-store checks."
+
+  while ! nix_ready; do
+    if [[ "$waited_seconds" -ge "$NIX_WAIT_SECONDS" ]]; then
+      die "Determinate Nix is installed, but its daemon did not become ready within one minute. Run sudo /nix/nix-installer repair --no-confirm, then use the resume command below."
+    fi
+    if [[ "$waited_seconds" -eq 0 ]]; then
+      info "Waiting for the Nix daemon to become ready."
+    fi
+    wait_for_nix_tick
+    waited_seconds=$((waited_seconds + NIX_POLL_SECONDS))
+  done
+  info "Determinate Nix is ready."
+}
+
 if [[ "$TEST_CHECKOUT_ONLY" -eq 1 ]]; then
   [[ -n "${MAC_SETUP_TEST_REPO_URL:-}" ]] || \
     die "MAC_SETUP_TEST_REPO_URL is required in checkout test mode."
@@ -469,39 +703,21 @@ USERNAME="$(/usr/bin/id -un)"
 [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "The local account name contains unsupported characters."
 [[ "$HOST" =~ ^[a-zA-Z0-9-]+$ ]] || die "The hostname contains unsupported characters."
 
-if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
-  info "Requesting Xcode Command Line Tools installation."
-  /usr/bin/xcode-select --install
-  die "Complete the Command Line Tools installation, then rerun setup.sh."
-fi
-
-if [[ ! -x /opt/homebrew/bin/brew ]]; then
-  info "Installing Homebrew from the official installer."
-  /bin/bash -p -c "$(/usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 \
-    https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-fi
-
-if [[ -x /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-fi
-command -v brew >/dev/null 2>&1 || die "Homebrew is not available on PATH."
-
 NIX_LAUNCHER="/nix/var/nix/profiles/default/bin/nix"
-if [[ ! -x "$NIX_LAUNCHER" ]]; then
-  info "Installing Determinate Nix from the official installer."
-  /usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 \
-    https://install.determinate.systems/nix | \
-    /bin/sh -s -- install --determinate
-fi
 
-if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
-  # shellcheck disable=SC1091
-  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-fi
-[[ -x "$NIX_LAUNCHER" ]] || \
-  die "Determinate Nix is unavailable. Restart the terminal and rerun setup.sh."
+info "Step 1 of 5: checking Apple developer tools."
+ensure_command_line_tools
 
+info "Step 2 of 5: preparing the configuration checkout."
 ensure_config_checkout
+CHECKOUT_READY=1
+trap 'unexpected_failure "$?"' ERR
+
+info "Step 3 of 5: checking Homebrew."
+ensure_homebrew
+
+info "Step 4 of 5: checking Determinate Nix."
+ensure_determinate_nix
 
 LOCAL_DIR="$CONFIG_DIR/.local"
 LOCAL_CONFIG="$LOCAL_DIR/config.json"
@@ -539,6 +755,10 @@ else
   info "Created private local host metadata outside Git tracking."
 fi
 
+"$CONFIG_DIR/scripts/validate-local-config" \
+  "$LOCAL_CONFIG" "$USERNAME" "$HOME" "$HOST" >/dev/null || \
+  die "The private local host metadata does not match this Mac."
+
 if [[ -e "$BOOTSTRAP_REVISION_FILE" || -L "$BOOTSTRAP_REVISION_FILE" ]]; then
   [[ -f "$BOOTSTRAP_REVISION_FILE" && ! -L "$BOOTSTRAP_REVISION_FILE" && \
     -O "$BOOTSTRAP_REVISION_FILE" ]] || \
@@ -561,24 +781,42 @@ printf '%s\n' "$bootstrap_revision" >"$bootstrap_revision_tmp"
 /bin/mv "$bootstrap_revision_tmp" "$BOOTSTRAP_REVISION_FILE"
 bootstrap_revision_tmp=""
 trap - EXIT
+if [[ "$REVISION_EXPLICIT" -eq 1 ]]; then
+  REVISION="$bootstrap_revision"
+fi
 
-"$CONFIG_DIR/scripts/rebuild" build
-
+info "Step 5 of 5: validating and building the system configuration."
 if [[ "$APPLY" -eq 1 ]]; then
   info "macOS may request App Management permission for this terminal; grant it, reopen the terminal, and rerun if activation stops."
-  "$CONFIG_DIR/scripts/rebuild" switch
+  "$CONFIG_DIR/scripts/rebuild" switch || \
+    die "The configuration did not activate completely."
   if [[ "$PROVISION" -eq 1 ]]; then
-    info "Starting the guided private-state restore. It is safe to rerun if an approval is interrupted."
+    info "Starting the guided private-state restore. If it stops, use the direct resume command setup prints."
     if [[ "${#FINISH_SETUP_ARGS[@]}" -gt 0 ]]; then
-      "$CONFIG_DIR/scripts/finish-setup" "${FINISH_SETUP_ARGS[@]}"
+      if ! "$CONFIG_DIR/scripts/finish-setup" "${FINISH_SETUP_ARGS[@]}"; then
+        printf '%s\n' \
+          '[ERROR] Base activation completed, but the guided private-state restore stopped.' \
+          'Resume only the private restore with:' >&2
+        print_finish_setup_command >&2
+        exit 1
+      fi
     else
-      "$CONFIG_DIR/scripts/finish-setup"
+      if ! "$CONFIG_DIR/scripts/finish-setup"; then
+        printf '%s\n' \
+          '[ERROR] Base activation completed, but the guided private-state restore stopped.' \
+          'Resume only the private restore with:' >&2
+        print_finish_setup_command >&2
+        exit 1
+      fi
     fi
   else
     info "Opening the iCloud service restrictions profile when it is not already installed."
-    "$CONFIG_DIR/scripts/open-icloud-service-restrictions-profile" --if-needed
+    "$CONFIG_DIR/scripts/open-icloud-service-restrictions-profile" --if-needed || \
+      die "The base activated, but the iCloud restrictions profile could not be opened."
   fi
 else
+  "$CONFIG_DIR/scripts/rebuild" build || \
+    die "The configuration did not build successfully."
   info "Build succeeded. After review, re-run with --provision for the regular fresh-machine flow."
 fi
 
@@ -589,22 +827,25 @@ Provisioning completed. Verify Mail/DAV and Filen sync, a signed Git commit,
 and restored GPG fingerprints before relying on this Mac.
 EOF
 elif [[ "$APPLY" -eq 1 ]]; then
-  cat <<EOF
+  cat <<'EOF'
 
 Base activation completed. To restore the regular private state in one guided,
 resumable flow, open a terminal and run:
-  $CONFIG_DIR/scripts/finish-setup
 EOF
+  print_finish_setup_command
 else
-  cat <<EOF
+  cat <<'EOF'
 
 The reviewed build is ready. For a regular fresh-machine setup, run:
-  $CONFIG_DIR/setup.sh --provision
+EOF
+  print_setup_command provision
+  cat <<'EOF'
 
 Use --apply instead only when the base configuration should be activated
 without restoring private state.
 EOF
 fi
 
+trap - ERR
 echo
 echo "No name, email address, signing key, or private host configuration is stored in Git."
