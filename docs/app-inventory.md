@@ -4,8 +4,9 @@
 
 The `mini` host composes:
 
-- `base`: security, browser, terminal, window, update, sync, and core utility apps;
-- `development`: editor, AI tools, Safari Technology Preview, TestFlight, OrbStack,
+- `base`: security, browsers including Safari Technology Preview, terminal,
+  window, update, sync, and core utility apps;
+- `development`: editor, AI tools, TestFlight, OrbStack,
   the pinned Erlang/OTP 29 plus Elixir 1.20 toolchain, and the pinned Rust
   compiler, Cargo, formatter, linter, and language server;
 - `desktop`: external-display support and desktop menu-bar behavior;
@@ -83,6 +84,10 @@ delete application/data directories wholesale.
 
 ## Intentionally omitted
 
+- Thaw: macOS 27 provides the selected menu-bar management features natively;
+  configure item visibility in System Settings after upgrading. Removing an
+  app bundle manually can leave a Homebrew receipt; review the receipt before
+  explicitly uninstalling the old cask, without `--zap`;
 - stale registered apps whose bundles are absent;
 - GUI editors superseded by Zed;
 - Microsoft Defender, OneDrive, and OneNote, which are bundled by the combined

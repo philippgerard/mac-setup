@@ -87,6 +87,20 @@ brewfile="$work_dir/Brewfile"
 trust_config_dir="$work_dir/config"
 /bin/mkdir -m 700 "$trust_config_dir"
 
+# Bundle discovers mas via PATH. Expose only that helper, not the entire
+# user-writable Homebrew bin directory, to the otherwise hardened subprocess.
+brew_tools_dir="$work_dir/bin"
+/bin/mkdir -m 700 "$brew_tools_dir"
+mas_binary="/opt/homebrew/bin/mas"
+if [[ -e "$mas_binary" || -L "$mas_binary" ]]; then
+  [[ -f "$mas_binary" && -x "$mas_binary" && -O "$mas_binary" ]] || {
+    echo "Homebrew mas executable is unsafe" >&2
+    exit 1
+  }
+  /bin/ln -s "$mas_binary" "$brew_tools_dir/mas"
+fi
+brew_path="$brew_tools_dir:$PATH"
+
 MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG" \
   "$NIX_BIN" eval --impure --raw \
     "$FLAKE_REF#darwinConfigurations.mini.config.homebrew.brewfile" >"$brewfile"
@@ -112,12 +126,21 @@ done < <("$JQ_BIN" -r \
 
 echo "Checking declared dependencies..."
 check_status=0
-HOMEBREW_NO_AUTO_UPDATE=1 XDG_CONFIG_HOME="$trust_config_dir" \
+PATH="$brew_path" HOMEBREW_NO_AUTO_UPDATE=1 XDG_CONFIG_HOME="$trust_config_dir" \
   "$BREW_BIN" bundle check --verbose --file="$brewfile" || check_status=$?
 
 echo
 echo "Showing undeclared installed software. Nothing will be removed."
-HOMEBREW_NO_AUTO_UPDATE=1 XDG_CONFIG_HOME="$trust_config_dir" \
-  "$BREW_BIN" bundle cleanup --file="$brewfile"
+preview_homebrew_cleanup() {
+  # Homebrew 7 can offer to perform cleanup even without --force. Closing
+  # stdin guarantees this helper remains a preview when run from a terminal.
+  PATH="$brew_path" HOMEBREW_NO_AUTO_UPDATE=1 XDG_CONFIG_HOME="$trust_config_dir" \
+    "$BREW_BIN" bundle cleanup --file="$brewfile" </dev/null
+}
+cleanup_status=0
+preview_homebrew_cleanup || cleanup_status=$?
 
-exit "$check_status"
+[[ "$check_status" -eq 0 ]] || exit "$check_status"
+# Homebrew returns 1 when undeclared software is present. Preserve that
+# status rather than hiding a possible error from the cleanup command.
+exit "$cleanup_status"

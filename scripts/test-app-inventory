@@ -10,7 +10,7 @@ HOMEBREW_DRY_RUN="$REPO_ROOT/scripts/homebrew-dry-run"
 
 for unwanted_declaration in \
   core-tunnel notion nova pdf-squeezer raycast replacicon securesafe tableplus \
-  whatcable zipic \
+  thaw whatcable zipic \
   microsoft-office microsoft-defender microsoft-onedrive onedrive \
   microsoft-onenote conductor deliveries; do
   if /usr/bin/grep -Fq "\"$unwanted_declaration\"" "${PROFILE_FILES[@]}"; then
@@ -29,18 +29,13 @@ if /usr/bin/grep -Fiq 'shebe' "$HOMEBREW_MODULE"; then
   exit 1
 fi
 
-[[ "$(/usr/bin/grep -Fh '"thaw"' "${PROFILE_FILES[@]}" | \
-  /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')" -eq 1 ]] || {
-  echo "Thaw must be declared exactly once in the Homebrew baseline" >&2
-  exit 1
-}
-
 [[ "$(/usr/bin/grep -Fh '"safari-technology-preview"' \
   "${PROFILE_FILES[@]}" | /usr/bin/wc -l | \
   /usr/bin/tr -d '[:space:]')" -eq 1 ]] || {
   echo "Safari Technology Preview must be declared exactly once" >&2
   exit 1
 }
+/usr/bin/grep -Fq '"safari-technology-preview"' "$REPO_ROOT/profiles/base.nix"
 
 for unwanted_mas_app in \
   Barbee Collections HazeOver Paperparrot 'Remind Me Faster' Trace 'WiFi Signal' \
@@ -128,5 +123,33 @@ grep -Fq 'BREW_BIN="/opt/homebrew/bin/brew"' "$HOMEBREW_DRY_RUN"
   echo "Homebrew dry-run helper does not consistently use its trusted jq executable" >&2
   exit 1
 }
+
+# Even if a caller pipes approval text, the production preview must never
+# forward it to Homebrew 7's new interactive cleanup confirmation.
+preview_function="$(/usr/bin/awk '
+  /^preview_homebrew_cleanup\(\) \{/ { printing = 1 }
+  printing { print }
+  printing && /^}/ { exit }
+' "$HOMEBREW_DRY_RUN")"
+# shellcheck disable=SC2034 # The extracted production function reads these variables.
+(
+  eval "$preview_function"
+  BREW_BIN="$test_dir/brew-fixture"
+  brew_path="$PATH"
+  trust_config_dir="$test_dir/config"
+  brewfile="$test_dir/Brewfile"
+  cat >"$BREW_BIN" <<'EOF'
+#!/bin/bash
+if read -r answer; then
+  echo "cleanup preview received interactive input: $answer" >&2
+  exit 99
+fi
+exit 1
+EOF
+  /bin/chmod 700 "$BREW_BIN"
+  status=0
+  printf 'y\n' | preview_homebrew_cleanup || status=$?
+  [[ "$status" -eq 1 ]]
+)
 
 echo "application inventory selection tests passed"

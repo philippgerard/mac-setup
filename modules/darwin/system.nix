@@ -36,6 +36,8 @@
       "com.apple.swipescrolldirection" = false;
 
       # Window behavior
+      # Legacy app preferences: applications may ignore these. Verify visible
+      # behavior after major macOS upgrades; these are not Reduce Motion.
       NSAutomaticWindowAnimationsEnabled = false;
       NSWindowResizeTime = 0.001;
 
@@ -67,6 +69,9 @@
 
     # Menu bar
     menuExtraClock = {
+      # Keep Apple's clock compact beside Dato. macOS 27 does not expose a
+      # supported switch to remove the system clock entirely.
+      IsAnalog = true;
       ShowDate = 2;
       ShowDayOfWeek = true;
     };
@@ -84,10 +89,6 @@
       NSGlobalDomain = {
         NSNavPanelExpandedStateForSaveMode = true;
         NSNavPanelExpandedStateForSaveMode2 = true;
-      };
-      # Hide system clock from menu bar (using Dato instead)
-      "com.apple.controlcenter" = {
-        "NSStatusItem Visible Clock" = false;
       };
     };
   };

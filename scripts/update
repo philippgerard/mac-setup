@@ -52,6 +52,8 @@ lock_tmp="$(/usr/bin/mktemp "$REPO_ROOT/.flake.lock.XXXXXX")"
 /bin/mv "$lock_tmp" "$REPO_ROOT/flake.lock"
 lock_tmp=""
 
+"$REPO_ROOT/scripts/update-oh-my-claudecode"
+
 "$REPO_ROOT/scripts/validate"
 "$REPO_ROOT/scripts/rebuild" build
 

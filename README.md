@@ -12,6 +12,7 @@ account metadata, keys, and sync settings are restored from the dedicated
 Before starting:
 
 - finish macOS updates and enable FileVault;
+- use macOS 27 or later for the native menu-bar workflow;
 - use the intended local administrator account;
 - sign in to the Mac App Store; and
 - make sure the required
@@ -32,6 +33,10 @@ current `main` commit at `~/.config/mac-setup`, installs Homebrew and Determinat
 Nix when needed, validates the checkout, and builds the configuration. It does
 not activate the build yet. Setup records the exact commit it checked out in
 `.local/bootstrap-revision` for later auditing.
+
+The developer-tool check compiles a small C translation unit against the
+selected macOS SDK. After an OS upgrade, update Command Line Tools or Xcode
+and complete Xcode's first-launch prompts if this check fails.
 
 If macOS opens the Command Line Tools installer, finish it and leave Terminal
 open; setup waits and continues automatically. The Homebrew installer remains
@@ -108,7 +113,7 @@ scripts/rebuild build
 # Build and activate local changes
 scripts/rebuild switch
 
-# Intentionally update pinned Nix inputs and Filen Menubar, then build
+# Intentionally update pinned Nix inputs, Filen Menubar, and OMC, then build
 scripts/update
 ```
 

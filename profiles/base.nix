@@ -10,10 +10,10 @@
     "google-chrome"
     "monocle-app"
     "otty"
+    "safari-technology-preview"
     "shottr"
     "spamsieve"
     "tailscale-app"
-    "thaw"
     "updatest"
   ];
 

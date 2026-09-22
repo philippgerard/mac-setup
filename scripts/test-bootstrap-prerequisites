@@ -53,6 +53,30 @@ print_setup_command_function="$(extract_function print_setup_command)"
 print_finish_setup_command_function="$(extract_function print_finish_setup_command)"
 die_function="$(extract_function die)"
 
+# A usable Git is not sufficient after an OS upgrade: exercise the real
+# compiler predicate with a missing SDK and a compiler that rejects headers.
+compile_function="$(extract_function developer_tools_compile_ready)"
+compile_function="${compile_function//\/usr\/bin\/xcrun/mock_xcrun}"
+for compile_failure in none sdk compiler; do
+  (
+    eval "$compile_function"
+    mock_xcrun() {
+      if [[ "$3" == --show-sdk-path ]]; then
+        [[ "$compile_failure" != sdk ]]
+      else
+        [[ "$3" == clang ]] || fail "unexpected developer tool invocation"
+        /usr/bin/grep -Fq '#include <stdio.h>'
+        [[ "$compile_failure" != compiler ]]
+      fi
+    }
+    if developer_tools_compile_ready; then
+      [[ "$compile_failure" == none ]] || fail "broken SDK/compiler accepted"
+    else
+      [[ "$compile_failure" != none ]] || fail "working compiler rejected"
+    fi
+  )
+done
+
 # A fresh machine requests Command Line Tools, waits without sleeping in the
 # test, and continues as soon as the readiness predicate changes.
 fresh_clt_trace="$test_root/fresh-clt.trace"

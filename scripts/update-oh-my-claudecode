@@ -1,0 +1,101 @@
+#!/bin/bash -p
+# shellcheck disable=SC2016 # jq expands its named variables, not the shell.
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+
+usage() {
+  echo "Usage: scripts/update-oh-my-claudecode [VERSION]"
+  echo "Refresh the source and npm dependency hashes; defaults to the latest stable release."
+  echo "Review the diff and run scripts/rebuild build before activation."
+}
+[[ $# -le 1 ]] || { usage >&2; exit 2; }
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+version="${1:-}"
+if [[ -n "$version" && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  usage >&2
+  exit 2
+fi
+
+NIX_BIN="$(mac_setup_trusted_nix)"
+JQ_BIN="$(command -v jq)"
+release_dir="$REPO_ROOT/modules/home"
+release_file="$release_dir/oh-my-claudecode-release.json"
+[[ -d "$release_dir" && ! -L "$release_dir" && -O "$release_dir" && \
+  -f "$release_file" && ! -L "$release_file" && -O "$release_file" ]] || {
+  echo "OMC release metadata is missing or unsafe" >&2
+  exit 1
+}
+"$JQ_BIN" -e '
+  type == "object" and keys == ["hash", "npmDepsHash", "version"] and
+  (.version | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+  ([.hash, .npmDepsHash] | all(.[];
+    type == "string" and test("^sha256-[A-Za-z0-9+/]{43}=$")))
+' "$release_file" >/dev/null
+
+if [[ -z "$version" ]]; then
+  version="$(/usr/bin/curl -qfsSL --proto '=https' --tlsv1.2 --retry 3 \
+    https://api.github.com/repos/Yeachan-Heo/oh-my-claudecode/releases/latest | \
+    "$JQ_BIN" -er 'select(.draft == false and .prerelease == false) | .tag_name | ltrimstr("v")')"
+fi
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "upstream did not provide a stable OMC version" >&2
+  exit 1
+}
+"$JQ_BIN" -e --arg version "$version" '
+  ($version | split(".") | map(tonumber)) >=
+  (.version | split(".") | map(tonumber))
+' "$release_file" >/dev/null || {
+  echo "refusing to downgrade OMC" >&2
+  exit 1
+}
+
+source_json="$("$NIX_BIN" store prefetch-file --unpack --json \
+  "https://github.com/Yeachan-Heo/oh-my-claudecode/archive/refs/tags/v$version.tar.gz")"
+source_hash="$("$JQ_BIN" -er .hash <<<"$source_json")"
+source_path="$("$JQ_BIN" -er .storePath <<<"$source_json")"
+[[ "$source_hash" =~ ^sha256-[A-Za-z0-9+/]{43}=$ && \
+  "$source_path" == /nix/store/* && -f "$source_path/package-lock.json" ]] || {
+  echo "invalid OMC source prefetch result" >&2
+  exit 1
+}
+"$JQ_BIN" -e --arg version "$version" \
+  '.name == "oh-my-claude-sisyphus" and .version == $version' \
+  "$source_path/package.json" >/dev/null
+flake_source="$("$REPO_ROOT/scripts/flake-source")"
+npm_hash="$("$NIX_BIN" run \
+  "$flake_source#darwinConfigurations.mini.pkgs.prefetch-npm-deps" -- \
+  "$source_path/package-lock.json")"
+[[ "$npm_hash" =~ ^sha256-[A-Za-z0-9+/]{43}=$ ]] || {
+  echo "invalid OMC npm dependency hash" >&2
+  exit 1
+}
+
+if [[ "$("$JQ_BIN" -r .version "$release_file")" == "$version" ]]; then
+  "$JQ_BIN" -e --arg hash "$source_hash" --arg npm_hash "$npm_hash" \
+    '.hash == $hash and .npmDepsHash == $npm_hash' "$release_file" >/dev/null || {
+    echo "OMC release bytes changed without a version change; refusing to repin" >&2
+    exit 1
+  }
+  echo "OMC $version is already pinned."
+  exit 0
+fi
+
+release_tmp="$(/usr/bin/mktemp "$release_dir/.omc-release.XXXXXX")"
+trap '/bin/rm -f -- "$release_tmp"' EXIT
+"$JQ_BIN" -n --arg version "$version" --arg hash "$source_hash" \
+  --arg npm_hash "$npm_hash" \
+  '{version: $version, hash: $hash, npmDepsHash: $npm_hash}' >"$release_tmp"
+/bin/chmod 644 "$release_tmp"
+/bin/mv "$release_tmp" "$release_file"
+trap - EXIT
+echo "Pinned OMC $version; build and review before activating."

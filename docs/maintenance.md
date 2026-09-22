@@ -14,7 +14,7 @@ scripts/rebuild build
 # Build and activate
 scripts/rebuild switch
 
-# Update flake.lock and the Filen Menubar release pin, then build for review
+# Update flake.lock, Filen Menubar, and OMC pins, then build for review
 scripts/update
 
 # Compare declared Homebrew/MAS state with the live Mac
@@ -31,11 +31,18 @@ DMG, verifies the downloaded bytes against GitHub's release-asset SHA-256
 digest, and atomically updates the tracked version and Nix hash. An unchanged
 version with different bytes is rejected rather than silently repinned.
 
-Review `flake.lock`, `modules/home/filen-menubar-release.json`, and the package
+Review `flake.lock`, `modules/home/filen-menubar-release.json`,
+`modules/home/oh-my-claudecode-release.json`, and the package
 diff before every activation. Do not run
 `brew bundle cleanup --force` or enable activation cleanup until
 `scripts/homebrew-dry-run` has been reviewed line by line. Omitted applications
 remain installed until they are removed deliberately.
+
+The Homebrew dry-run closes cleanup's standard input, because Homebrew 7 can
+otherwise offer an interactive removal prompt without `--force`. An exit
+status of 1 can mean undeclared installed software remains even when the
+dependency check says everything is satisfied; read both sections. The helper
+never accepts cleanup, and separately installed apps can remain intentional.
 
 ## Topgrade and Node tools
 
@@ -60,6 +67,14 @@ installation witness, so it does not run again on later activations or over an
 existing OMC setup. Ambiguous or unrelated Claude state is left untouched and
 reported for manual review because the terminal setup command has no preserve
 mode.
+
+`scripts/update` also refreshes OMC's GitHub source and npm dependency hashes.
+To target a specific newer stable version independently, run
+`scripts/update-oh-my-claudecode VERSION`, then `scripts/rebuild build`.
+The updater refuses downgrades or changed bytes for an already-pinned version.
+OMC 5.5's SQLite and Darwin filesystem addons are built for the Nix platform
+and exercised during the package install check, alongside first-run setup and
+the HUD. A successful build does not rerun setup on an existing Claude profile.
 
 For a standalone npm setup, later activations only reconcile OMC-owned hook,
 HUD, and Node runtime paths with the current Nix closure. This does not rerun

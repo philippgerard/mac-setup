@@ -1,5 +1,22 @@
 # Post-install verification
 
+## After a major macOS upgrade
+
+- Run `scripts/validate`, `scripts/rebuild build`, and
+  `scripts/homebrew-dry-run` before activation. Inspect the dependency diff.
+- Confirm `xcrun --sdk macosx --show-sdk-version` and the selected compiler
+  work; bootstrap now rejects an unusable SDK even when Git works.
+- In System Settings > Menu Bar, verify Wi-Fi is hidden on the desktop profile,
+  the system clock uses the compact analog style alongside Dato, and configure
+  native app-item visibility. Thaw is intentionally no longer installed.
+- Open a Finder window and a save sheet to assess animation behavior. The
+  legacy window-animation preferences are best-effort app settings; their
+  stored values do not prove that every macOS 27 application honours them.
+- Launch Safari Technology Preview and check for its updates through Software
+  Update. A missing Homebrew receipt does not mean the app bundle is absent.
+
+## Full restore
+
 The complete block verifies the regular full restore: Git identity, GPG, the
 default Mail/DAV account, Filen, and the configured application profiles. Run
 it after `setup.sh --provision` completes, or after a base activation followed

@@ -542,6 +542,16 @@ developer_tools_ready() {
   /usr/bin/xcrun --find git >/dev/null 2>&1
 }
 
+developer_tools_compile_ready() {
+  # Finding Git alone does not detect an invalid SDK after a macOS upgrade.
+  /usr/bin/xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1 &&
+    /usr/bin/xcrun --sdk macosx clang -x c -fsyntax-only - \
+      >/dev/null 2>&1 <<'EOF'
+#include <stdio.h>
+int main(void) { return puts("mac-setup"); }
+EOF
+}
+
 request_command_line_tools() {
   /usr/bin/xcode-select --install
 }
@@ -707,6 +717,8 @@ NIX_LAUNCHER="/nix/var/nix/profiles/default/bin/nix"
 
 info "Step 1 of 5: checking Apple developer tools."
 ensure_command_line_tools
+developer_tools_compile_ready || \
+  die "Apple's compiler or macOS SDK is unusable. Install the matching Command Line Tools/Xcode update, check xcode-select -p, and complete any Xcode first-launch prompts before retrying setup."
 
 info "Step 2 of 5: preparing the configuration checkout."
 ensure_config_checkout
