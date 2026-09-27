@@ -12,7 +12,10 @@ let
     # The nix-darwin configuration, Home Manager, Topgrade, and global npm
     # tooling are managed outside Topgrade. Update the flake intentionally with
     # scripts/update; project Node dependencies remain project-owned.
-    disable = ["nix", "home_manager", "node"]
+    # Claude Code: Topgrade passes the "synced" scope of account-managed
+    # plugins to `claude plugin update`, which rejects it. Update Claude Code
+    # with `claude update` instead.
+    disable = ["nix", "home_manager", "node", "claude_code"]
 
     # Pre-commands (run before updates)
     # [pre_commands]
