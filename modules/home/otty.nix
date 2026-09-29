@@ -41,6 +41,11 @@ let
   '';
 in
 {
+  # Home Manager runs in the primary user's GUI session after Homebrew.
+  home.activation.configureOttyHandlers = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+    $DRY_RUN_CMD ${../../scripts/configure-otty-handlers} ${pkgs.duti}/bin/duti
+  '';
+
   # A future xdg.configFile/home.file declaration would turn this back into a
   # read-only Nix-store link and break Otty's Settings UI.
   assertions = [

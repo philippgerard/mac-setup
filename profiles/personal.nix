@@ -1,6 +1,10 @@
-{ ... }:
+{ localConfig, ... }:
 
 {
+  home-manager.users.${localConfig.username}.imports = [
+    ../modules/home/filen-menubar.nix
+  ];
+
   homebrew.casks = [
     "beeper"
     "imageoptim"

@@ -1,0 +1,53 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+
+[[ $# -ge 1 && $# -le 2 ]] || {
+  echo "usage: scripts/preview-system <built-system> [previous-system]" >&2
+  exit 2
+}
+NIX_BIN="$(mac_setup_trusted_nix)"
+candidate="$(/usr/bin/readlink -f "$1")"
+previous="${2:-/run/current-system}"
+[[ "$candidate" =~ ^/nix/store/[0-9a-z]{32}-[^/]+$ && -f "$candidate/activate" ]] || {
+  echo "preview requires a built immutable Darwin system" >&2
+  exit 1
+}
+echo "Candidate: $candidate"
+if [[ -e "$previous" ]]; then
+  previous="$(/usr/bin/readlink -f "$previous")"
+  [[ "$previous" =~ ^/nix/store/[0-9a-z]{32}-[^/]+$ && -f "$previous/activate" ]] || {
+    echo "previous system is not an immutable Darwin generation" >&2
+    exit 1
+  }
+  echo "Package changes:"
+  "$NIX_BIN" store diff-closures "$previous" "$candidate"
+  echo "Closure sizes:"
+  "$NIX_BIN" path-info --closure-size --human-readable "$previous" "$candidate"
+else
+  echo "No active generation; this is a first installation."
+  "$NIX_BIN" path-info --closure-size --human-readable "$candidate"
+fi
+
+new_brewfile="$candidate/etc/mac-setup/Brewfile"
+old_brewfile="$previous/etc/mac-setup/Brewfile"
+[[ -f "$new_brewfile" ]] || { echo "candidate has no saved Brewfile" >&2; exit 1; }
+echo "Homebrew/MAS declaration changes:"
+if [[ -f "$old_brewfile" ]]; then
+  diff_status=0
+  /usr/bin/diff -u "$old_brewfile" "$new_brewfile" || diff_status=$?
+  [[ "$diff_status" -le 1 ]] || exit "$diff_status"
+  [[ "$diff_status" -ne 0 ]] || echo "No declaration changes."
+else
+  echo "The previous generation has no saved Brewfile; showing all candidate declarations."
+  /bin/cat "$new_brewfile"
+fi
+echo "GUI application versions remain managed by Homebrew, MAS, and their vendors."
+echo "Nothing was activated. See docs/maintenance.md for activation and rollback."

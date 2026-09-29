@@ -16,7 +16,7 @@ if ! command -v bash >/dev/null 2>&1 || \
   ! bash -c '(( BASH_VERSINFO[0] >= 4 ))'; then
   missing_validation_tools+=("bash>=4")
 fi
-for command_name in fish gitleaks jq plutil rg shellcheck; do
+for command_name in actionlint fish gitleaks jq plutil rg shellcheck; do
   command -v "$command_name" >/dev/null 2>&1 || \
     missing_validation_tools+=("$command_name")
 done
@@ -37,6 +37,7 @@ for script in setup.sh scripts/*; do
 done
 
 shellcheck "${shell_scripts[@]}"
+actionlint .github/workflows/*.yml
 
 bash "$REPO_ROOT/scripts/check-index-worktree-parity"
 bash "$REPO_ROOT/scripts/check-public-safety"
@@ -69,6 +70,8 @@ bash "$REPO_ROOT/scripts/test-ssh-private-state"
 bash "$REPO_ROOT/scripts/test-trusted-nix"
 bash "$REPO_ROOT/scripts/test-validation-tool-bootstrap"
 bash "$REPO_ROOT/scripts/test-zed-config"
+bash "$REPO_ROOT/scripts/test-workflow-helpers"
+bash "$REPO_ROOT/scripts/test-update-transaction"
 
 [[ -f flake.lock ]] || {
   echo "flake.lock is required" >&2

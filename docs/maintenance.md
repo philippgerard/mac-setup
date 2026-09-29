@@ -11,6 +11,9 @@ scripts/validate
 # Build without changing the live system
 scripts/rebuild build
 
+# Build and show package, closure-size, and Homebrew/MAS declaration changes
+scripts/rebuild preview
+
 # Build and activate
 scripts/rebuild switch
 
@@ -19,11 +22,81 @@ scripts/update
 
 # Compare declared Homebrew/MAS state with the live Mac
 scripts/homebrew-dry-run
+
+# Read-only post-install checks (use --json for a machine-readable report)
+scripts/doctor
 ```
 
 `scripts/validate` enters the pinned validation shell automatically when the
 active generation does not yet provide a required tool. It therefore also
 works before the first activation of a newly added validator.
+
+`scripts/rebuild preview` compares the candidate with `/run/current-system`.
+Each new generation saves its Brewfile under `etc/mac-setup/`; when the active
+generation predates this metadata, the first preview prints all candidate
+declarations. This compares intended app selection, not vendor-managed GUI
+application versions. The same built output can be inspected again with
+`scripts/preview-system ./result` without repeating validation or the build.
+
+`scripts/update` prepares all three pin files in a temporary, filtered candidate
+checkout, then validates and builds it once. Only a successful candidate whose
+original checkout and host selectors remain unchanged is promoted. Failed
+downloads, hashing, or builds leave the working pins unchanged. Promotion saves
+an ignored recovery journal and restores its own changes on a catchable failure.
+An uncatchable interruption can leave `.local/update-recovery.*`; inspect its
+`original/` and `candidate/` files before resuming. Concurrent edits are preserved.
+Check that no update is active before removing a stale `.local/update.lock`.
+If the pins were already staged, restage their reviewed changes to satisfy index
+and working-tree parity. No updated pins are committed or activated automatically.
+
+## Rollback and recovery
+
+List generations before choosing a rollback:
+
+```bash
+sudo darwin-rebuild --list-generations
+```
+
+After reviewing the target, restore the previous generation with:
+
+```bash
+sudo darwin-rebuild --rollback
+```
+
+For a particular listed generation, use
+`sudo darwin-rebuild --switch-generation NUMBER`. This runs that generation's
+activation. It restores Nix-managed packages and configuration, but does not
+reverse vendor app updates, Homebrew/MAS installations, seeded writable settings,
+1Password restores, keychain imports, or manual profile approvals. Its Homebrew
+activation may install missing apps declared by that older generation.
+Do not garbage-collect the known-good generation until recovery is verified.
+After rollback, diagnose the checkout before applying it again; rollback does
+not change Git files or dependency pins.
+
+If Fish or the normal terminal is unavailable, use Terminal.app with `/bin/zsh`
+and invoke `/run/current-system/sw/bin/darwin-rebuild` explicitly.
+
+## CI and restore rehearsal
+
+The macOS Actions workflow runs `scripts/ci`: the repository suite and all flake
+checks, including the complete public system build and profile-composition
+assertions. It uses Apple Silicon macOS, a pinned Determinate installer action,
+full Git history, and read-only repository permissions. It never activates or
+requires private state. Run it locally with `scripts/ci` when changing CI checks.
+The hosted build uses macOS 26; it does not certify macOS 27 GUI behavior.
+
+Use the [disposable-Mac rehearsal](restore-rehearsal.md) for activation,
+interruption/resume, vendor approvals, and repeated activation.
+
+## Checkout location and shortcuts
+
+Setup and successful switching record the selected checkout outside Git at
+`~/Library/Application Support/mac-setup/checkout`. The `mac-setup` launcher and
+Fish's `rebuild`, `update`, `fishconf`, and `nixconf` use this private record.
+`MAC_SETUP_CONFIG_DIR` overrides it for one invocation; the default remains
+`~/.config/mac-setup` when no record exists. Candidate builds never change it.
+
+## Release pin review
 
 `scripts/update` queries GitHub for Filen Menubar's latest published stable
 release. When a newer version exists, it requires the expected Apple Silicon
@@ -49,7 +122,7 @@ never accepts cleanup, and separately installed apps can remain intentional.
 `topgrade` updates supported user tools and package managers, including pnpm.
 It deliberately skips Nix, Home Manager, npm-global packages, and its own
 self-update because those have repository or project owners. Use
-`scripts/update` for Nix inputs.
+`scripts/update` for Nix inputs. Docker/container image updates are also disabled.
 
 pnpm global executables live below `$PNPM_HOME/bin`, which activation creates
 and Fish adds to `PATH`. Do not run `pnpm setup`; it would mutate shell

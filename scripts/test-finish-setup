@@ -492,7 +492,7 @@ grep -Fq 'mac_setup_harden_environment' "$UPDATE_SCRIPT"
 # shellcheck disable=SC2016 # Match the literal absolute command invocations.
 grep -Fq 'work_dir="$(/usr/bin/mktemp -d ' "$UPDATE_SCRIPT"
 # shellcheck disable=SC2016 # Match the literal absolute command invocations.
-grep -Fq 'lock_tmp="$(/usr/bin/mktemp ' "$UPDATE_SCRIPT"
+grep -Fq 'temporary_pin="$(/usr/bin/mktemp ' "$REPO_ROOT/scripts/promote-update"
 if grep -Eq '(^|[^/[:alnum:]_])mktemp([[:space:]]|$)' "$UPDATE_SCRIPT"; then
   echo "dependency update script resolves mktemp through PATH" >&2
   exit 1

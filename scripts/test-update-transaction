@@ -1,0 +1,155 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-transaction-test.XXXXXX")"
+trap '/bin/chmod -R u+w "$test_root"; /bin/rm -rf -- "$test_root"' EXIT
+fixture="$test_root/repository"
+baseline="$test_root/baseline"
+candidate="$test_root/candidate"
+pins=(flake.lock modules/home/filen-menubar-release.json modules/home/oh-my-claudecode-release.json)
+for directory in "$fixture" "$baseline" "$candidate"; do
+  /bin/mkdir -p "$directory/modules/home"
+done
+/bin/mkdir -p "$fixture/scripts" "$fixture/.local"
+/bin/cp "$REPO_ROOT/scripts/promote-update" "$fixture/scripts/"
+/bin/chmod 700 "$fixture/scripts/promote-update"
+for pin in "${pins[@]}"; do
+  printf 'old\n' >"$baseline/$pin"
+  printf 'new\n' >"$candidate/$pin"
+  /bin/cp "$baseline/$pin" "$fixture/$pin"
+done
+
+"$fixture/scripts/promote-update" "$baseline" "$candidate"
+for pin in "${pins[@]}"; do
+  /usr/bin/cmp "$candidate/$pin" "$fixture/$pin"
+  /bin/cp "$baseline/$pin" "$fixture/$pin"
+done
+
+# Fail the second replacement after the first succeeds; the first must roll back.
+/bin/chmod 500 "$fixture/modules/home"
+if "$fixture/scripts/promote-update" "$baseline" "$candidate" >"$test_root/error" 2>&1; then
+  echo "promotion unexpectedly wrote a non-writable directory" >&2; exit 1
+fi
+/bin/chmod 700 "$fixture/modules/home"
+for pin in "${pins[@]}"; do /usr/bin/cmp "$baseline/$pin" "$fixture/$pin"; done
+[[ -z "$(/usr/bin/find "$fixture/.local" -mindepth 1 -print -quit)" ]]
+
+printf 'concurrent edit\n' >"$fixture/flake.lock"
+if "$fixture/scripts/promote-update" "$baseline" "$candidate" >"$test_root/error" 2>&1; then
+  echo "promotion accepted a concurrent edit" >&2; exit 1
+fi
+/usr/bin/grep -Fxq 'concurrent edit' "$fixture/flake.lock"
+/usr/bin/cmp "$baseline/modules/home/filen-menubar-release.json" "$fixture/modules/home/filen-menubar-release.json"
+
+# A failing updater must never reach promotion, and only the candidate may change.
+workflow="$test_root/workflow"
+/bin/mkdir -p "$workflow/scripts" "$workflow/.local" "$workflow/modules/home"
+/bin/cp "$REPO_ROOT/scripts/update" "$REPO_ROOT/scripts/trusted-path" \
+  "$REPO_ROOT/scripts/trusted-git" "$REPO_ROOT/scripts/promote-update" "$workflow/scripts/"
+printf 'private fixture\n' >"$workflow/.local/config.json"
+printf '.local/\n' >"$workflow/.gitignore"
+printf 'old\n' >"$workflow/flake.lock"
+printf 'unchanged\n' >"$workflow/source-marker"
+for pin in "${pins[@]}"; do printf 'old\n' >"$workflow/$pin"; done
+cat >"$workflow/scripts/validate-local-config" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat >"$workflow/scripts/trusted-nix" <<'EOF'
+#!/bin/bash
+mac_setup_trusted_nix() { echo "$UPDATE_TEST_NIX"; }
+EOF
+cat >"$workflow/scripts/flake-source" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+[[ "$1" == --copy-to ]]
+while IFS= read -r path; do
+  /bin/mkdir -p "$(dirname "$2/$path")"
+  /bin/cp -p "$root/$path" "$2/$path"
+done < <(/usr/bin/git -C "$root" ls-files)
+EOF
+cat >"$workflow/scripts/update-filen-menubar" <<'EOF'
+#!/bin/bash
+root="$(cd "$(dirname "$0")/.." && pwd)"
+printf 'new\n' >"$root/modules/home/filen-menubar-release.json"
+[[ "$UPDATE_TEST_STAGE" != filen ]]
+EOF
+cat >"$workflow/scripts/update-oh-my-claudecode" <<'EOF'
+#!/bin/bash
+root="$(cd "$(dirname "$0")/.." && pwd)"
+printf 'new\n' >"$root/modules/home/oh-my-claudecode-release.json"
+[[ "$UPDATE_TEST_STAGE" != omc ]]
+EOF
+cat >"$workflow/scripts/rebuild" <<'EOF'
+#!/bin/bash
+[[ "$1" == build ]] || exit 99
+printf 'build\n' >>"$UPDATE_TEST_TRACE"
+if [[ "$UPDATE_TEST_STAGE" == concurrent ]]; then
+  printf 'concurrent edit\n' >"$UPDATE_TEST_ORIGINAL/source-marker"
+fi
+if [[ "$UPDATE_TEST_STAGE" == concurrent-mode ]]; then
+  /bin/chmod 600 "$UPDATE_TEST_ORIGINAL/scripts/rebuild"
+fi
+[[ "$UPDATE_TEST_STAGE" != build ]]
+EOF
+cat >"$workflow/scripts/preview-system" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat >"$test_root/nix" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+if [[ "$1 $2" == 'store add-path' ]]; then
+  [[ $# -eq 5 && "$3 $4" == '--name source' ]] || exit 99
+  cd "$5"
+  while IFS= read -r path; do
+    /usr/bin/stat -f '%Lp' "$path"
+    /usr/bin/shasum -a 256 "$path"
+  done < <(/usr/bin/find . -type f | LC_ALL=C /usr/bin/sort) | /usr/bin/shasum -a 256
+  exit 0
+fi
+[[ "$*" == 'flake update' ]] || exit 99
+printf 'new\n' >flake.lock
+[[ "$UPDATE_TEST_STAGE" != nix ]]
+EOF
+/bin/chmod 700 "$test_root/nix"
+/bin/chmod 700 "$workflow/scripts/"*
+/usr/bin/git -C "$workflow" init -q
+/usr/bin/git -C "$workflow" add --all
+fixture_domain=example.invalid
+/usr/bin/git -C "$workflow" -c user.name=Fixture -c user.email="fixture@$fixture_domain" \
+  -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -qm fixture
+export UPDATE_TEST_NIX="$test_root/nix"
+export UPDATE_TEST_TRACE="$test_root/builds"
+export UPDATE_TEST_ORIGINAL="$workflow"
+for UPDATE_TEST_STAGE in filen nix omc build concurrent concurrent-mode; do
+  export UPDATE_TEST_STAGE
+  : >"$UPDATE_TEST_TRACE"
+  if "$workflow/scripts/update" >"$test_root/error" 2>&1; then
+    echo "failed candidate stage unexpectedly succeeded: $UPDATE_TEST_STAGE" >&2; exit 1
+  fi
+  for pin in "${pins[@]}"; do /usr/bin/grep -Fxq old "$workflow/$pin"; done
+  [[ ! -e "$workflow/.local/update.lock" ]]
+  if [[ "$UPDATE_TEST_STAGE" == concurrent ]]; then
+    /usr/bin/grep -Fxq 'concurrent edit' "$workflow/source-marker"
+    printf 'unchanged\n' >"$workflow/source-marker"
+  fi
+  if [[ "$UPDATE_TEST_STAGE" == concurrent-mode ]]; then
+    [[ "$(/usr/bin/stat -f '%Lp' "$workflow/scripts/rebuild")" == 600 ]]
+    /bin/chmod 700 "$workflow/scripts/rebuild"
+  fi
+  [[ -z "$(/usr/bin/git -C "$workflow" status --porcelain)" ]]
+done
+: >"$UPDATE_TEST_TRACE"
+UPDATE_TEST_STAGE=success "$workflow/scripts/update" >"$test_root/success" 2>&1 || {
+  /bin/cat "$test_root/success" >&2
+  exit 1
+}
+for pin in "${pins[@]}"; do /usr/bin/grep -Fxq new "$workflow/$pin"; done
+[[ "$(/usr/bin/wc -l <"$UPDATE_TEST_TRACE" | /usr/bin/tr -d ' ')" == 1 ]]
+
+echo "candidate isolation, promotion rollback, and concurrent edit tests passed"

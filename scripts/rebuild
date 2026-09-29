@@ -6,6 +6,12 @@ umask 077
 REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 LOCAL_CONFIG_JSON="$REPO_ROOT/.local/config.json"
 MODE="${1:-build}"
+[[ $# -le 1 ]] || { echo "usage: scripts/rebuild [build|preview|switch]" >&2; exit 2; }
+case "$MODE" in
+  build|preview|switch) ;;
+  -h|--help) echo "usage: scripts/rebuild [build|preview|switch]"; exit 0 ;;
+  *) echo "usage: scripts/rebuild [build|preview|switch]" >&2; exit 2 ;;
+esac
 # shellcheck source=scripts/trusted-path
 source "$REPO_ROOT/scripts/trusted-path"
 mac_setup_harden_environment
@@ -60,10 +66,13 @@ assert_snapshot_unchanged() {
 }
 
 case "$MODE" in
-  build)
+  build|preview)
     assert_snapshot_unchanged
     MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG_SNAPSHOT" \
       "$NIX_BIN" build --impure "$FLAKE_REF#darwinConfigurations.mini.system"
+    if [[ "$MODE" == preview ]]; then
+      "$REPO_ROOT/scripts/preview-system" "$REPO_ROOT/result"
+    fi
     ;;
   switch)
     assert_snapshot_unchanged
@@ -73,9 +82,10 @@ case "$MODE" in
     /usr/bin/sudo -H /usr/bin/env MAC_SETUP_LOCAL_CONFIG="$LOCAL_CONFIG_SNAPSHOT" \
       "$NIX_BIN" run --impure "$FLAKE_REF#darwin-rebuild" -- \
         switch --impure --flake "$FLAKE_REF#mini"
+    "$REPO_ROOT/scripts/register-checkout"
     ;;
   *)
-    echo "usage: scripts/rebuild [build|switch]" >&2
+    echo "usage: scripts/rebuild [build|preview|switch]" >&2
     exit 2
     ;;
 esac

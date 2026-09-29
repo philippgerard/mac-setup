@@ -1,16 +1,13 @@
-{ localConfig, ... }:
+{ lib, localConfig, ... }:
 
 {
   imports = [
     ./packages.nix
-    ./oh-my-claudecode.nix
-    ./filen-menubar.nix
     ./fish.nix
     ./git.nix
     ./gpg.nix
     ./ssh.nix
     ./otty.nix
-    ./zed.nix
     ./directories.nix
     ./tmux.nix
     ./topgrade.nix
@@ -28,8 +25,8 @@
 
   # Environment variables
   home.sessionVariables = {
-    EDITOR = "zed --wait";
-    VISUAL = "zed --wait";
+    EDITOR = lib.mkDefault "vim";
+    VISUAL = lib.mkDefault "vim";
     TERMINAL = "otty";
     LANG = "en_US.UTF-8";
     LC_ALL = "en_US.UTF-8";

@@ -15,7 +15,8 @@ let
     # Claude Code: Topgrade passes the "synced" scope of account-managed
     # plugins to `claude plugin update`, which rejects it. Update Claude Code
     # with `claude update` instead.
-    disable = ["nix", "home_manager", "node", "claude_code"]
+    # Skip Docker/container image updates as well.
+    disable = ["nix", "home_manager", "node", "claude_code", "containers"]
 
     # Pre-commands (run before updates)
     # [pre_commands]

@@ -27,6 +27,17 @@ Homebrew/MAS provide GUI and vendor applications. Homebrew cleanup, automatic
 updates, and upgrades are disabled during activation; removal is always a
 separate reviewed operation.
 
+The development profile also imports the Home Manager development toolchain,
+OMC, Zed settings, and GitHub CLI. The personal profile owns Filen Menubar.
+The base Home Manager configuration keeps core tools and uses Vim unless the
+development profile selects Zed. Pure flake checks verify both the full `mini`
+composition and a base-only composition.
+
+Otty's file and SSH URL associations run in Home Manager's user session after
+Homebrew installation. Errors remain visible and file handlers are read back.
+The generation also retains a public Brewfile and feature manifest under
+`etc/mac-setup/` for previews and diagnostics.
+
 Chezmoi and other dotfile managers are intentionally not part of this design.
 
 ## Bootstrap model

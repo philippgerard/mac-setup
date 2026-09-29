@@ -25,7 +25,7 @@ IFS= read -r updater_shebang <"$UPDATER"
   'https://api.github.com/repos/philippgerard/filen-menubar/releases/latest' \
   "$UPDATER"
 # shellcheck disable=SC2016 # Match the literal delegated update command.
-/usr/bin/grep -Fq '"$REPO_ROOT/scripts/update-filen-menubar"' "$UPDATE_SCRIPT"
+/usr/bin/grep -Fq '"$candidate/scripts/update-filen-menubar"' "$UPDATE_SCRIPT"
 if /usr/bin/grep -Eq \
   '(^|[^/[:alnum:]_])(curl|mktemp)([[:space:]]|$)' "$UPDATER"; then
   echo "Filen Menubar updater resolves a sensitive command through PATH" >&2

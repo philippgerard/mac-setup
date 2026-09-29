@@ -1,0 +1,42 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+usage() {
+  echo "Usage: mac-setup {rebuild [build|preview|switch]|update|doctor [options]|edit [relative-path]}"
+}
+case "${1:-}" in
+  rebuild|update|doctor|edit) action="$1"; shift ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+checkout="${MAC_SETUP_CONFIG_DIR:-}"
+record="$HOME/Library/Application Support/mac-setup/checkout"
+if [[ -z "$checkout" && ( -e "$record" || -L "$record" ) ]]; then
+  [[ -f "$record" && ! -L "$record" && -O "$record" && \
+    "$(/usr/bin/stat -f '%Lp' "$record")" == 600 ]] || {
+    echo "checkout record is unsafe; rerun setup from the intended checkout" >&2
+    exit 1
+  }
+  checkout="$(/bin/cat "$record")"
+fi
+checkout="${checkout:-$HOME/.config/mac-setup}"
+[[ "$checkout" == /* && -d "$checkout" && -O "$checkout" && \
+  -f "$checkout/flake.nix" && -x "$checkout/scripts/rebuild" ]] || {
+  echo "configuration checkout is unavailable; set MAC_SETUP_CONFIG_DIR or rerun setup" >&2
+  exit 1
+}
+
+if [[ "$action" == edit ]]; then
+  [[ $# -le 1 ]] || { usage >&2; exit 2; }
+  relative_path="${1:-.}"
+  case "$relative_path" in
+    /*|..|../*|*/../*|*/..) echo "edit expects a path within the checkout" >&2; exit 2 ;;
+  esac
+  if command -v zed >/dev/null 2>&1; then
+    exec zed "$checkout/$relative_path"
+  fi
+  exec /usr/bin/vi "$checkout/$relative_path"
+fi
+exec "$checkout/scripts/$action" "$@"

@@ -4,57 +4,82 @@ set -euo pipefail
 umask 077
 
 REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+[[ $# -eq 0 ]] || { echo "usage: scripts/update" >&2; exit 2; }
 # shellcheck source=scripts/trusted-path
 source "$REPO_ROOT/scripts/trusted-path"
 mac_setup_harden_environment
 # shellcheck source=scripts/trusted-nix
 source "$REPO_ROOT/scripts/trusted-nix"
+# shellcheck source=scripts/trusted-git
+source "$REPO_ROOT/scripts/trusted-git"
 NIX_BIN="$(mac_setup_trusted_nix)"
-
-"$REPO_ROOT/scripts/update-filen-menubar"
-
-temp_base="${TMPDIR:-/tmp}"
-temp_base="${temp_base%/}"
-work_dir="$(/usr/bin/mktemp -d "$temp_base/mac-setup-update.XXXXXX")"
-source_dir="$work_dir/source"
-/bin/mkdir -m 700 "$source_dir"
-lock_tmp=""
+local_config="$REPO_ROOT/.local/config.json"
+"$REPO_ROOT/scripts/validate-local-config" "$local_config" "$(/usr/bin/id -un)" "$HOME" mini >/dev/null
+[[ -d "$REPO_ROOT/.local" && ! -L "$REPO_ROOT/.local" && -O "$REPO_ROOT/.local" ]] || {
+  echo "private update-state directory is unsafe" >&2
+  exit 1
+}
+lock_dir="$REPO_ROOT/.local/update.lock"
+/bin/mkdir -m 700 "$lock_dir" 2>/dev/null || {
+  echo "An update lock exists. Check for an active update before removing .local/update.lock." >&2
+  exit 1
+}
+work_dir=""
 cleanup() {
-  if [[ -n "${lock_tmp:-}" && -f "$lock_tmp" && ! -L "$lock_tmp" ]]; then
-    /bin/rm -f -- "$lock_tmp" >/dev/null 2>&1 || true
+  if [[ -n "$work_dir" && -d "$work_dir" && ! -L "$work_dir" ]]; then
+    /bin/rm -rf -- "$work_dir"
   fi
-  if [[ -n "${work_dir:-}" && -d "$work_dir" && ! -L "$work_dir" && \
-    "$work_dir" == "$temp_base"/mac-setup-update.* ]]; then
-    /bin/rm -rf -- "$work_dir" >/dev/null 2>&1 || true
-  fi
+  /bin/rmdir "$lock_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+work_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-update.XXXXXX")"
+baseline="$work_dir/baseline"
+candidate="$work_dir/candidate"
+lock_source="$work_dir/lock-source"
+current_source="$work_dir/current"
+/bin/mkdir -m 700 "$baseline" "$candidate" "$lock_source" "$current_source"
+"$REPO_ROOT/scripts/flake-source" --copy-to "$baseline" >/dev/null
+baseline_source="$("$NIX_BIN" store add-path --name source "$baseline")"
+/bin/cp -R "$baseline/." "$candidate/"
 
-"$REPO_ROOT/scripts/flake-source" --copy-to "$source_dir" >/dev/null
-(
-  cd "$source_dir"
-  "$NIX_BIN" flake update
-)
+# Preserve history for its scan without changing the caller's index or branches.
+# Every Nix source is still produced by scripts/flake-source.
+mac_setup_safe_git "$candidate" init -q
+mac_setup_safe_git "$candidate" fetch -q --no-tags "$REPO_ROOT" HEAD
+mac_setup_safe_git "$candidate" update-ref refs/heads/candidate FETCH_HEAD
+mac_setup_safe_git "$candidate" symbolic-ref HEAD refs/heads/candidate
+mac_setup_safe_git "$candidate" add --all
+/bin/mkdir -m 700 "$candidate/.local"
+/bin/cp "$local_config" "$candidate/.local/config.json"
+/bin/chmod 600 "$candidate/.local/config.json"
 
-[[ -f "$source_dir/flake.lock" && ! -L "$source_dir/flake.lock" ]] || {
-  echo "Nix did not produce a safe updated lock file" >&2
+echo "Preparing dependency updates in a private candidate checkout..."
+"$candidate/scripts/update-filen-menubar"
+mac_setup_safe_git "$candidate" add --all
+"$candidate/scripts/flake-source" --copy-to "$lock_source" >/dev/null
+(cd "$lock_source" && "$NIX_BIN" flake update)
+/bin/cp "$lock_source/flake.lock" "$candidate/flake.lock"
+mac_setup_safe_git "$candidate" add --all
+"$candidate/scripts/update-oh-my-claudecode"
+mac_setup_safe_git "$candidate" add --all
+
+# Rebuild owns one full validation pass and one validated host snapshot.
+"$candidate/scripts/rebuild" build
+"$candidate/scripts/preview-system" "$candidate/result"
+
+# Refuse a candidate if public files or host selectors changed during the build.
+"$REPO_ROOT/scripts/flake-source" --copy-to "$current_source" >/dev/null
+[[ "$("$NIX_BIN" store add-path --name source "$current_source")" == "$baseline_source" ]] || {
+  echo "The checkout changed during the update; its files were left untouched." >&2
   exit 1
 }
-[[ -f "$REPO_ROOT/flake.lock" && ! -L "$REPO_ROOT/flake.lock" && \
-  -O "$REPO_ROOT/flake.lock" ]] || {
-  echo "repository lock file is unsafe" >&2
+/usr/bin/cmp -s "$local_config" "$candidate/.local/config.json" || {
+  echo "Local host selectors changed during the update; its pins were left untouched." >&2
   exit 1
 }
-
-lock_tmp="$(/usr/bin/mktemp "$REPO_ROOT/.flake.lock.XXXXXX")"
-/bin/cp "$source_dir/flake.lock" "$lock_tmp"
-/bin/chmod 644 "$lock_tmp"
-/bin/mv "$lock_tmp" "$REPO_ROOT/flake.lock"
-lock_tmp=""
-
-"$REPO_ROOT/scripts/update-oh-my-claudecode"
-
-"$REPO_ROOT/scripts/validate"
-"$REPO_ROOT/scripts/rebuild" build
-
-echo "Dependencies and release pins were updated; review and commit the diff before switching."
+"$REPO_ROOT/scripts/promote-update" "$baseline" "$candidate"
+echo "The candidate passed validation and build. Review the three pin files before activation."
+echo "If those files were already staged, restage the reviewed updates before rebuilding."

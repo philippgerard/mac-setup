@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_FILES=("$REPO_ROOT"/profiles/*.nix)
 HOMEBREW_MODULE="$REPO_ROOT/modules/darwin/homebrew.nix"
-NIX_PACKAGE_MODULE="$REPO_ROOT/modules/home/packages.nix"
+NIX_PACKAGE_MODULE="$REPO_ROOT/modules/home/development.nix"
 HOMEBREW_DRY_RUN="$REPO_ROOT/scripts/homebrew-dry-run"
 
 for unwanted_declaration in \

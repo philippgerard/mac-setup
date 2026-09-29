@@ -829,6 +829,7 @@ if [[ "$APPLY" -eq 1 ]]; then
 else
   "$CONFIG_DIR/scripts/rebuild" build || \
     die "The configuration did not build successfully."
+  "$CONFIG_DIR/scripts/register-checkout"
   info "Build succeeded. After review, re-run with --provision for the regular fresh-machine flow."
 fi
 

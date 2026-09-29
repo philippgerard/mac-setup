@@ -10,7 +10,8 @@ The `mini` host composes:
   the pinned Erlang/OTP 29 plus Elixir 1.20 toolchain, and the pinned Rust
   compiler, Cargo, formatter, linter, and language server;
 - `desktop`: external-display support and desktop menu-bar behavior;
-- `personal`: communication, news, media, archive, and document utilities;
+- `personal`: communication, news, media, archive, document utilities, and
+  the pinned Filen Menubar application;
 - `work`: individual Microsoft Office apps, Teams, and Slack;
 - `gaming`: GeForce NOW.
 

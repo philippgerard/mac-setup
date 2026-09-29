@@ -15,36 +15,8 @@
     curl
     wget
 
-    # Development
-    # Keep the BEAM pair explicit so Mix worktrees get the tested OTP release.
-    beam.interpreters.erlang_29
-    beam.packages.erlang_29.elixir_1_20
-    biome
-    cargo
-    claude-code
-    clippy
-    fastlane
-    ffmpeg
-    gh
-    git-lfs
-    go
-    imagemagick
-    mkcert
-    mosh
-    pandoc
-    pnpm
-    fnm
-    rust-analyzer
-    rustc
-    rustfmt
-    sentry-cli
-    tea
-    uv
-    watchman
-    xcbeautify
-    xcodegen
-
     # Security, maintenance, and repository validation
+    actionlint
     _1password-cli
     gitleaks
     gnupg

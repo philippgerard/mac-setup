@@ -8,6 +8,8 @@ Do not erase the Mac until every final gate is green.
 - [ ] `scripts/validate` passes.
 - [ ] `scripts/rebuild build` succeeds twice without an unexpected second change.
 - [ ] Bootstrap was rehearsed in build-only mode.
+- [ ] The [disposable-Mac rehearsal](restore-rehearsal.md) covers first activation,
+  private-restore resume, and repeated activation for the selected revision.
 - [ ] Homebrew cleanup remains `none`, or a cleanup dry-run has been reviewed line by line.
 - [ ] Every required app/tool is declared or documented as a manual/vendor-synced restore.
 - [ ] No Chezmoi dependency or restore step remains.

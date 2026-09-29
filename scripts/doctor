@@ -1,0 +1,212 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ONLY=""
+SKIP=" "
+JSON=0
+MAIL_ACCOUNTS=(personal-mail)
+MAIL_EXPLICIT=0
+COMPONENTS=" system apps configs git ssh gpg mail filen development "
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/doctor [--json] [--only COMPONENT] [--skip COMPONENT]
+                      [--mail-account ACCOUNT_ID ...]
+
+Read-only post-install checks. Components: system, apps, configs, git, ssh,
+gpg, mail, filen, development. --skip and --mail-account may be repeated.
+Exit 0 means all selected checks passed; 1 means a check failed; 2 means bad usage.
+No signing, authentication, restore, activation, or cleanup is performed.
+EOF
+}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --only|--skip)
+      [[ $# -ge 2 && "$COMPONENTS" == *" $2 "* ]] || { usage >&2; exit 2; }
+      if [[ "$1" == --only ]]; then ONLY="$2"; else SKIP+="$2 "; fi
+      shift 2
+      ;;
+    --mail-account)
+      [[ $# -ge 2 && "$2" =~ ^[a-z][a-z0-9-]*$ ]] || { usage >&2; exit 2; }
+      if [[ "$MAIL_EXPLICIT" -eq 0 ]]; then MAIL_ACCOUNTS=("$2"); else MAIL_ACCOUNTS+=("$2"); fi
+      MAIL_EXPLICIT=1
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+command -v jq >/dev/null || { echo "jq is missing; activate the base configuration first" >&2; exit 1; }
+manifest="/run/current-system/etc/mac-setup/manifest.json"
+private_state="$HOME/Library/Application Support/mac-setup"
+failures=0
+passed=0
+skipped=0
+records=""
+
+report() {
+  local component="$1" status="$2" label="$3" remedy="$4"
+  case "$status" in
+    PASS) passed=$((passed + 1)) ;;
+    FAIL) failures=$((failures + 1)) ;;
+    SKIP) skipped=$((skipped + 1)) ;;
+  esac
+  if [[ "$JSON" -eq 1 ]]; then
+    records+="$(jq -cn --arg component "$component" --arg status "$status" \
+      --arg check "$label" --arg action "$remedy" \
+      '{component: $component, status: $status, check: $check, action: $action}')"$'\n'
+  else
+    printf '%-4s  %s: %s\n' "$status" "$component" "$label"
+    [[ -z "$remedy" ]] || printf '      %s\n' "$remedy"
+  fi
+}
+
+selected() {
+  [[ ( -z "$ONLY" || "$ONLY" == "$1" ) && "$SKIP" != *" $1 "* ]]
+}
+
+check() {
+  local component="$1" label="$2" remedy="$3"
+  shift 3
+  if ! selected "$component"; then
+    report "$component" SKIP "$label" "Excluded by the selected scope."
+  elif "$@" >/dev/null 2>&1; then
+    report "$component" PASS "$label" ""
+  else
+    report "$component" FAIL "$label" "$remedy"
+  fi
+}
+
+private_file() {
+  [[ -f "$1" && ! -L "$1" && -O "$1" && \
+    "$(/usr/bin/stat -f '%Lp' "$1")" == 600 && -s "$1" ]]
+}
+private_directory() {
+  [[ -d "$1" && ! -L "$1" && -O "$1" && \
+    "$(/usr/bin/stat -f '%Lp' "$1")" == 700 ]]
+}
+manifest_valid() {
+  [[ -f "$manifest" ]] && jq -e '
+    .schema == 1 and (.development | type == "boolean") and
+    (.filen | type == "boolean") and (.casks | type == "array") and
+    (.brews | type == "array") and (.masApps | type == "object")
+  ' "$manifest" >/dev/null
+}
+feature_enabled() {
+  manifest_valid && jq -e --arg feature "$1" '.[$feature] == true' "$manifest" >/dev/null
+}
+shell_ready() {
+  /usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" UserShell | \
+    /usr/bin/grep -Fqx 'UserShell: /run/current-system/sw/bin/fish'
+}
+handler_ready() {
+  [[ "$(duti -d "$1")" == io.appmakes.otty ]]
+}
+ssh_state_ready() {
+  private_directory "$HOME/.ssh" && private_directory "$HOME/.ssh/config.d" || return 1
+  local entry
+  for entry in "$HOME/.ssh/config.d/"* "$HOME/.ssh/config.d/".[!.]* "$HOME/.ssh/config.d/"..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    private_file "$entry" || return 1
+  done
+}
+gpg_files_ready() {
+  private_directory "$HOME/.gnupg" || return 1
+  private_directory "$HOME/.gnupg/private-keys-v1.d" || return 1
+  local entry found=0
+  for entry in "$HOME/.gnupg/private-keys-v1.d/"*.key; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    private_file "$entry" || return 1
+    found=1
+  done
+  [[ "$found" -eq 1 ]]
+}
+mail_ready() {
+  local account="$1" profile="$private_state/mail-profiles/$1.mobileconfig"
+  private_directory "$private_state" && private_directory "$private_state/mail-profiles" && \
+    private_file "$private_state/mail-accounts.json" && private_file "$profile" || return 1
+  "$REPO_ROOT/scripts/validate-mail-account-profile" "$account" \
+    "$private_state/mail-accounts.json" "$profile" >/dev/null || return 1
+  [[ "$("$REPO_ROOT/scripts/configuration-profile-state" "$profile")" == exact ]]
+}
+icloud_profile_ready() {
+  [[ "$("$REPO_ROOT/scripts/configuration-profile-state" \
+    "$REPO_ROOT/configuration-profiles/disable-icloud-mail-calendar-contacts.mobileconfig")" == exact ]]
+}
+applications_ready() {
+  manifest_valid || return 1
+  [[ -x /opt/homebrew/bin/brew && -x /opt/homebrew/bin/mas ]] || return 1
+  local installed_casks installed_brews installed_mas name
+  installed_casks="$(HOMEBREW_NO_AUTO_UPDATE=1 /opt/homebrew/bin/brew list --cask)" || return 1
+  installed_brews="$(HOMEBREW_NO_AUTO_UPDATE=1 /opt/homebrew/bin/brew list --formula)" || return 1
+  installed_mas="$(/opt/homebrew/bin/mas list)" || return 1
+  while IFS= read -r name; do
+    /usr/bin/grep -Fxq -- "$name" <<<"$installed_casks" || return 1
+  done < <(jq -r '.casks[]' "$manifest")
+  while IFS= read -r name; do
+    /usr/bin/grep -Fxq -- "$name" <<<"$installed_brews" || return 1
+  done < <(jq -r '.brews[]' "$manifest")
+  while IFS= read -r name; do
+    /usr/bin/grep -Eq "^${name}[[:space:]]" <<<"$installed_mas" || return 1
+  done < <(jq -r '.masApps[]' "$manifest")
+}
+development_ready() {
+  local executable
+  for executable in erl elixir mix cargo rustc rustfmt rust-analyzer fnm pnpm uv omc; do
+    command -v "$executable" >/dev/null || return 1
+  done
+}
+filen_app_ready() {
+  local app="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
+  [[ -d "$app" && ! -L "$app" && -x "$app/Contents/Helpers/filen-menubar-cli" ]] && \
+    /usr/bin/codesign --verify --deep --strict "$app"
+}
+
+check system "Generation metadata" "Build, review, and activate this version of mac-setup." manifest_valid
+check system "Validated local host selectors" "Rerun setup from this checkout." \
+  "$REPO_ROOT/scripts/validate-local-config" "$REPO_ROOT/.local/config.json" "$(/usr/bin/id -un)" "$HOME" mini
+check system "Fish login shell" "Review and activate the base configuration." shell_ready
+check apps "Declared Homebrew and MAS receipts" "Run scripts/homebrew-dry-run; complete missing installs and App Store sign-in." applications_ready
+check configs "Writable Otty settings" "Activate the Otty module; preserve any existing settings backup." private_file "$HOME/.config/otty/config.toml"
+check configs "Shell-script association" "Activate the Otty user module, then verify Finder behavior." handler_ready public.shell-script
+check configs "Executable association" "Activate the Otty user module, then verify Finder behavior." handler_ready public.unix-executable
+check configs "Command-file association" "Activate the Otty user module, then verify Finder behavior." handler_ready com.apple.terminal.shell-script
+for identity_file in identity.inc public-identity.inc allowed_signers; do
+  check git "$identity_file permissions and presence" "Run scripts/configure-git-identity; test signing separately." \
+    private_file "$HOME/.config/git/$identity_file"
+done
+check ssh "Private SSH host permissions" "Review private hosts, then run scripts/secure-ssh-private-state." ssh_state_ready
+check gpg "Legacy secret-key files present" "Restore legacy GPG if required; verify fingerprints and usability separately." gpg_files_ready
+check mail "iCloud service restrictions" "Run scripts/open-icloud-service-restrictions-profile and approve the profile." icloud_profile_ready
+for account in "${MAIL_ACCOUNTS[@]}"; do
+  check mail "Selected account profile: $account" "Resume scripts/finish-setup for this account; verify Mail and S/MIME separately." mail_ready "$account"
+done
+if feature_enabled development; then
+  check development "Development commands available" "Activate the development profile; run project and authentication smoke tests separately." development_ready
+  check development "Writable Zed settings" "Activate the development profile; preserve any settings backup." private_file "$HOME/.config/zed/settings.json"
+else
+  report development SKIP "Development tools" "The active manifest does not enable this feature."
+fi
+if feature_enabled filen; then
+  check filen "Private sync configuration" "Run scripts/restore-filen-menubar-from-1password." private_file "$HOME/Library/Application Support/filen-menubar/config.json"
+  check filen "Signed app and bundled backend" "Activate the personal profile and complete App Management approval." filen_app_ready
+  check filen "Login agent loaded" "Activate the personal profile, then open Filen Menubar." \
+    /bin/launchctl print "gui/$(/usr/bin/id -u)/org.nix-community.home.filen-menubar"
+else
+  report filen SKIP "Filen restore" "The active manifest does not enable this feature."
+fi
+
+if [[ "$JSON" -eq 1 ]]; then
+  printf '%s' "$records" | jq -s --argjson passed "$passed" --argjson failed "$failures" \
+    --argjson skipped "$skipped" '{checks: ., summary: {passed: $passed, failed: $failed, skipped: $skipped}}'
+else
+  printf '\n%s passed, %s failed, %s skipped.\n' "$passed" "$failures" "$skipped"
+fi
+[[ "$failures" -eq 0 ]]

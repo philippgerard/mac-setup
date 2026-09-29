@@ -110,11 +110,17 @@ scripts/validate
 # Build without changing the live system
 scripts/rebuild build
 
+# Review package and Homebrew/MAS declaration changes before activation
+scripts/rebuild preview
+
 # Build and activate local changes
 scripts/rebuild switch
 
 # Intentionally update pinned Nix inputs, Filen Menubar, and OMC, then build
 scripts/update
+
+# Check installed state without restoring or changing it
+scripts/doctor
 ```
 
 Homebrew and Mac App Store application removal is never automatic. Review
@@ -134,6 +140,8 @@ Homebrew and Mac App Store application removal is never automatic. Review
   application settings
 - [Post-install verification](docs/restore-verification.md) — thorough automated
   and manual checks
+- [Disposable-Mac rehearsal](docs/restore-rehearsal.md) — first activation,
+  interrupted restore, and repeated activation
 - [Pre-wipe checklist](docs/pre-wipe-checklist.md) — required checks before
   erasing an existing Mac
 - [Public release safety](docs/public-release.md) — PII and Git-history policy

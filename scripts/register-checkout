@@ -1,0 +1,33 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+state_dir="$HOME/Library/Application Support/mac-setup"
+for directory in "$HOME" "$HOME/Library" "$HOME/Library/Application Support" "$state_dir"; do
+  if [[ -e "$directory" || -L "$directory" ]]; then
+    [[ -d "$directory" && ! -L "$directory" && -O "$directory" ]] || {
+      echo "checkout record directory is unsafe" >&2
+      exit 1
+    }
+  else
+    /bin/mkdir -m 700 "$directory"
+  fi
+done
+state_dir="$(cd "$state_dir" && pwd -P)"
+case "$state_dir/" in
+  "$REPO_ROOT/"*) echo "checkout records must remain outside the repository" >&2; exit 1 ;;
+esac
+/bin/chmod 700 "$state_dir"
+record="$state_dir/checkout"
+[[ ! -e "$record" && ! -L "$record" || -f "$record" && ! -L "$record" && -O "$record" ]] || {
+  echo "checkout record is unsafe" >&2
+  exit 1
+}
+[[ "$REPO_ROOT" != *$'\n'* ]] || exit 1
+temporary_record="$(/usr/bin/mktemp "$state_dir/.checkout.XXXXXX")"
+trap '/bin/rm -f -- "$temporary_record"' EXIT
+printf '%s\n' "$REPO_ROOT" >"$temporary_record"
+/bin/chmod 600 "$temporary_record"
+/bin/mv "$temporary_record" "$record"

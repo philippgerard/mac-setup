@@ -1,6 +1,11 @@
 { config, pkgs, lib, ... }:
 
 {
+  home.file.".local/bin/mac-setup" = {
+    source = ../../scripts/mac-setup;
+    executable = true;
+  };
+
   # Fish shell configuration
   programs.fish = {
     enable = true;
@@ -46,15 +51,15 @@
       glog = "git log --oneline --graph --decorate";
 
       # Nix/darwin shortcuts
-      rebuild = "~/.config/mac-setup/scripts/rebuild switch";
-      update = "~/.config/mac-setup/scripts/update";
+      rebuild = "mac-setup rebuild switch";
+      update = "mac-setup update";
     };
 
     # Shell abbreviations (expand on space, better than aliases for some cases)
     shellAbbrs = {
       # Quick edits
-      fishconf = "zed ~/.config/mac-setup/modules/home/fish.nix";
-      nixconf = "zed ~/.config/mac-setup";
+      fishconf = "mac-setup edit modules/home/fish.nix";
+      nixconf = "mac-setup edit";
     };
 
     # Interactive shell init
@@ -187,6 +192,8 @@
     enableFishIntegration = true;
     settings = {
       add_newline = true;
+      # Allow brief filesystem latency during terminal startup.
+      scan_timeout = 200;
       command_timeout = 1000;
 
       character = {

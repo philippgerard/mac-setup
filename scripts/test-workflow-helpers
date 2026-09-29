@@ -1,0 +1,73 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+test_root="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-setup-workflow-test.XXXXXX")"
+trap '/bin/chmod -R u+w "$test_root"; /bin/rm -rf -- "$test_root"' EXIT
+
+# Exercise the actual association helper without changing Launch Services.
+cat >"$test_root/duti" <<'EOF'
+#!/bin/bash
+set -eu
+printf '%s\n' "$*" >>"$DUTI_TRACE"
+if [[ "$1" == -d ]]; then echo io.appmakes.otty; fi
+if [[ "$*" == '-s io.appmakes.otty ssh' && "${DUTI_FAIL:-0}" == 1 ]]; then exit 9; fi
+EOF
+/bin/chmod 700 "$test_root/duti"
+DUTI_TRACE="$test_root/trace" "$REPO_ROOT/scripts/configure-otty-handlers" "$test_root/duti"
+/usr/bin/grep -Fxq -- '-s io.appmakes.otty ssh' "$test_root/trace"
+if /usr/bin/grep -Fq -- 'ssh all' "$test_root/trace"; then exit 1; fi
+if DUTI_TRACE="$test_root/trace" DUTI_FAIL=1 \
+  "$REPO_ROOT/scripts/configure-otty-handlers" "$test_root/duti"; then
+  echo "Otty helper concealed an association failure" >&2
+  exit 1
+fi
+
+# Register and resolve a non-default checkout, including paths with spaces.
+task_home="$test_root/home"
+checkout="$test_root/custom checkout"
+/bin/mkdir -p "$task_home" "$checkout/scripts"
+checkout="$(cd "$checkout" && pwd -P)"
+/bin/cp "$REPO_ROOT/scripts/register-checkout" "$checkout/scripts/"
+: >"$checkout/flake.nix"
+cat >"$checkout/scripts/rebuild" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$PWD" "$@"
+EOF
+/bin/chmod 700 "$checkout/scripts/"*
+/usr/bin/env HOME="$task_home" "$checkout/scripts/register-checkout"
+record="$task_home/Library/Application Support/mac-setup/checkout"
+[[ "$(/bin/cat "$record")" == "$checkout" ]]
+[[ "$(/usr/bin/stat -f '%Lp' "$record")" == 600 ]]
+/usr/bin/env HOME="$task_home" "$REPO_ROOT/scripts/mac-setup" rebuild preview >"$test_root/launcher"
+/usr/bin/grep -Fxq preview "$test_root/launcher"
+/bin/chmod 644 "$record"
+if /usr/bin/env HOME="$task_home" "$REPO_ROOT/scripts/mac-setup" rebuild build >/dev/null 2>&1; then
+  echo "launcher accepted an unsafe checkout record" >&2; exit 1
+fi
+/usr/bin/env HOME="$task_home" MAC_SETUP_CONFIG_DIR="$checkout" \
+  "$REPO_ROOT/scripts/mac-setup" rebuild build >"$test_root/launcher"
+/usr/bin/grep -Fxq build "$test_root/launcher"
+
+# Doctor must report failures and explicit skips without touching private state.
+/bin/mkdir -p "$task_home/.config/git"
+for name in identity.inc public-identity.inc allowed_signers; do
+  printf 'fixture\n' >"$task_home/.config/git/$name"
+done
+/usr/bin/find "$task_home" -type f -exec /usr/bin/shasum -a 256 {} \; >"$test_root/before"
+/usr/bin/env HOME="$task_home" "$REPO_ROOT/scripts/doctor" --only git --json >"$test_root/doctor"
+jq -e '.summary.failed == 0 and .summary.passed == 3 and .summary.skipped > 0' "$test_root/doctor" >/dev/null
+/usr/bin/find "$task_home" -type f -exec /usr/bin/shasum -a 256 {} \; >"$test_root/after"
+/usr/bin/cmp "$test_root/before" "$test_root/after"
+/bin/chmod 644 "$task_home/.config/git/identity.inc"
+if /usr/bin/env HOME="$task_home" "$REPO_ROOT/scripts/doctor" --only git --json >"$test_root/doctor"; then
+  echo "doctor accepted unsafe identity permissions" >&2; exit 1
+fi
+jq -e '.summary.failed == 1 and ([.checks[] | select(.status == "FAIL")][0].action | length > 0)' "$test_root/doctor" >/dev/null
+/usr/bin/env HOME="$task_home" "$REPO_ROOT/scripts/doctor" --only git --skip git --json >"$test_root/doctor"
+jq -e '.summary.failed == 0 and .summary.passed == 0' "$test_root/doctor" >/dev/null
+if "$REPO_ROOT/scripts/doctor" --skip misspelled >/dev/null 2>&1; then exit 1; fi
+
+echo "Otty, checkout launcher, and read-only doctor tests passed"

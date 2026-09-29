@@ -15,186 +15,83 @@
 - Launch Safari Technology Preview and check for its updates through Software
   Update. A missing Homebrew receipt does not mean the app bundle is absent.
 
-## Full restore
+## Read-only checks
 
-The complete block verifies the regular full restore: Git identity, GPG, the
-default Mail/DAV account, Filen, and the configured application profiles. Run
-it after `setup.sh --provision` completes, or after a base activation followed
-by every equivalent manual restore.
-
-If a component was intentionally skipped, omit its numbered section rather
-than treating that expected absence as a failure. The
-`selected_profile_accounts` value assumes `personal-mail`; change it to the
-IMAP/DAV account IDs selected for this Mac.
-
-Start `/bin/bash`, then paste the complete block. The parentheses keep a failed
-check from closing the parent shell.
+After provisioning, run from the selected checkout:
 
 ```bash
-(
-  set -euo pipefail
-
-  cd "$HOME/.config/mac-setup"
-  expected_revision="$(<.local/bootstrap-revision)"
-  [[ "$expected_revision" =~ ^[0-9a-f]{40}$ ]]
-  test "$(/usr/bin/stat -f '%Lp' .local/bootstrap-revision)" = 600
-  private_state_dir="$HOME/Library/Application Support/mac-setup"
-  mail_config="$private_state_dir/mail-accounts.json"
-  mail_profile_dir="$private_state_dir/mail-profiles"
-
-  if [[ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]]; then
-    source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-  fi
-  if [[ -x /opt/homebrew/bin/brew ]]; then
-    eval "$(/opt/homebrew/bin/brew shellenv)"
-  fi
-
-  # 1. Confirm the recorded checkout revision and public repository safety.
-  test "$(git rev-parse HEAD)" = "$expected_revision"
-  test -z "$(git status --porcelain)"
-  scripts/validate
-  scripts/check-history-safety HEAD
-  filtered_source="$(scripts/flake-source)"
-  test ! -e "$filtered_source/.local"
-
-  # 2. Prove the configuration builds repeatedly and the package inventory is present.
-  scripts/rebuild build
-  scripts/rebuild build
-  scripts/homebrew-dry-run
-  brew list --versions mole
-  mo --version
-
-  # 3. Verify 1Password, SSH access, private files, and signed Git commits.
-  export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-  op account get >/dev/null
-  ssh-add -L >/dev/null
-  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git ls-remote \
-    https://github.com/philippgerard/mac-setup.git HEAD >/dev/null
-
-  for identity_file in identity.inc public-identity.inc allowed_signers; do
-    identity_path="$HOME/.config/git/$identity_file"
-    test -s "$identity_path"
-    test "$(/usr/bin/stat -f '%Lp' "$identity_path")" = 600
-  done
-  git config --get user.email | grep -q '@users\.noreply\.github\.com$'
-  test -n "$(git config --get user.signingKey)"
-  test "$(/usr/bin/stat -f '%Lp' "$HOME/.ssh")" = 700
-  test "$(/usr/bin/stat -f '%Lp' "$HOME/.ssh/config.d")" = 700
-  while IFS= read -r -d '' private_ssh_host; do
-    test -f "$private_ssh_host"
-    test ! -L "$private_ssh_host"
-    test "$(/usr/bin/stat -f '%Lp' "$private_ssh_host")" = 600
-  done < <(find "$HOME/.ssh/config.d" -mindepth 1 -maxdepth 1 -print0)
-
-  signing_test_repo="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-signing.XXXXXX")"
-  git -C "$signing_test_repo" init -q
-  git -C "$signing_test_repo" commit --allow-empty -S -m 'SSH signing verification' >/dev/null
-  git -C "$signing_test_repo" verify-commit HEAD
-
-  # 4. Verify the restored legacy GPG material.
-  gpg --list-secret-keys --with-colons | grep -q '^sec:'
-  gpg --list-secret-keys --keyid-format long
-  gpgconf --list-dirs agent-socket >/dev/null
-
-  # 5. Verify the private account metadata and generated password-free IMAP/DAV profiles.
-  test -s "$mail_config"
-  test "$(/usr/bin/stat -f '%Lp' "$mail_config")" = 600
-  test -d "$mail_profile_dir"
-  test "$(/usr/bin/stat -f '%Lp' "$mail_profile_dir")" = 700
-  mail_profile_count="$(find "$mail_profile_dir" -maxdepth 1 -type f -name '*.mobileconfig' | wc -l | tr -d '[:space:]')"
-  test "$mail_profile_count" -ge 1
-  while IFS= read -r -d '' mail_profile; do
-    test "$(/usr/bin/stat -f '%Lp' "$mail_profile")" = 600
-    plutil -lint "$mail_profile" >/dev/null
-  done < <(find "$mail_profile_dir" -maxdepth 1 -type f -name '*.mobileconfig' -print0)
-
-  test "$(scripts/configuration-profile-state \
-    configuration-profiles/disable-icloud-mail-calendar-contacts.mobileconfig)" = exact
-  selected_profile_accounts=(personal-mail)
-  for profile_id in "${selected_profile_accounts[@]}"; do
-    profile_file="$mail_profile_dir/$profile_id.mobileconfig"
-    scripts/validate-mail-account-profile \
-      "$profile_id" "$mail_config" "$profile_file" >/dev/null
-    test "$(scripts/configuration-profile-state "$profile_file")" = exact
-  done
-
-  # 6. Verify GUI tools own writable configs rather than immutable Nix links.
-  otty_config="$HOME/.config/otty/config.toml"
-  test -f "$otty_config"
-  test ! -L "$otty_config"
-  test -w "$otty_config"
-  zed_settings="$HOME/.config/zed/settings.json"
-  test -f "$zed_settings"
-  test ! -L "$zed_settings"
-  test -w "$zed_settings"
-
-  # 7. Verify Filen Menubar, its bundled backend, and the login agent.
-  filen_config="$HOME/Library/Application Support/filen-menubar/config.json"
-  test -s "$filen_config"
-  test "$(/usr/bin/stat -f '%Lp' "$filen_config")" = 600
-  test ! -e "$HOME/.local/bin/filen"
-  filen_app="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
-  test -d "$filen_app"
-  test ! -L "$filen_app"
-  test -x "$filen_app/Contents/Helpers/filen-menubar-cli"
-  test -s "$filen_app/Contents/Resources/filen-cli/filen-cli.cjs"
-  test -s "$filen_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
-  for filen_notice in \
-    AGPL-3.0.txt \
-    NODE-LICENSE.txt \
-    THIRD_PARTY_NOTICES.txt \
-    runtime.cdx.json; do
-    test -s "$filen_app/Contents/Resources/licenses/filen-cli/$filen_notice"
-  done
-  /usr/bin/codesign --verify --deep --strict "$filen_app"
-  /usr/bin/codesign --verify --strict \
-    "$filen_app/Contents/Helpers/filen-menubar-cli"
-  /usr/bin/codesign --verify --strict \
-    "$filen_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
-  if test -e "$HOME/.filen-cli"; then
-    filen_state="$HOME/.filen-cli"
-  else
-    filen_state="$HOME/Library/Application Support/filen-cli"
-  fi
-  test -d "$filen_state"
-  test "$(/usr/bin/stat -f '%Lp' "$filen_state")" = 700
-  filen_credential="$filen_state/.filen-cli-keep-me-logged-in"
-  test ! -e "$filen_credential" || test "$(/usr/bin/stat -f '%Lp' "$filen_credential")" = 600
-  launchctl print "gui/$(id -u)/org.nix-community.home.filen-menubar" >/dev/null
-  test -d '/Applications/Microsoft Teams.app'
-
-  # 8. Exercise the remaining command-line entry points.
-  fnm --version
-  pnpm --version
-  pnpm bin -g
-  topgrade --dry-run --only pnpm
-  erl -noshell -eval 'io:format("OTP ~s~n", [erlang:system_info(otp_release)]), halt().'
-  elixir --version
-  mix --version
-  cargo --version
-  rustc --version
-  rustfmt --version
-  cargo clippy --version
-  rust-analyzer --version
-  gh --version
-  gh auth status
-  codex --version
-  claude --version
-  omc --version
-  tmux -V
-  ssh -V
-  test "$(dscl . -read "/Users/$(id -un)" UserShell)" = 'UserShell: /run/current-system/sw/bin/fish'
-
-  printf 'Automated restore verification passed.\n'
-  printf 'The disposable signing-test repository is at %s\n' "$signing_test_repo"
-)
+scripts/doctor
+scripts/doctor --json
 ```
+
+The command reports PASS, FAIL, or SKIP for each check, includes a repair step
+for failures, and returns nonzero when a selected check fails. It checks the
+active generation's metadata, local host selectors, login shell, declared app
+receipts, writable settings, file handlers, private-file permissions, selected
+Mail profiles, and enabled development/Filen components. A receipt does not
+prove an app still launches; the manual checks below remain necessary.
+
+Match intentional omissions and account selection to the restore you performed:
+
+```bash
+scripts/doctor --skip gpg --skip filen
+scripts/doctor --mail-account personal-mail --mail-account work-mail
+scripts/doctor --only configs
+```
+
+Components are `system`, `apps`, `configs`, `git`, `ssh`, `gpg`, `mail`, `filen`,
+and `development`. The first explicit Mail account replaces `personal-mail`.
+Development and Filen checks use the active generation's selected features.
+Before the first activation of a generation with metadata, the system check
+fails and optional feature checks are skipped; that is not a complete restore.
+
+Doctor performs no signing, authentication, restore, activation, or cleanup.
+Git and GPG checks establish file presence and permissions, not key usability.
+The account-profile check may create private temporary query files, which its
+existing helper removes. It never imports identities or approves profiles.
+
+## Interactive smoke checks
+
+These checks can prompt, authenticate, start an agent, or create disposable
+state, so they are deliberately separate from doctor. Run them in Bash after
+restoring the components you intend to use:
+
+```bash
+op account get >/dev/null
+ssh-add -L >/dev/null
+
+git_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-signing.XXXXXX")"
+git -C "$git_test_dir" init -q
+git -C "$git_test_dir" commit --allow-empty -S -m 'SSH signing verification'
+git -C "$git_test_dir" verify-commit HEAD
+
+gpg --list-secret-keys --keyid-format long
+gpgconf --list-dirs agent-socket
+
+gh auth status
+omc --version
+fnm --version
+pnpm --version
+pnpm bin -g
+erl -noshell -eval 'io:format("OTP ~s~n", [erlang:system_info(otp_release)]), halt().'
+elixir --version
+mix --version
+cargo --version
+rustc --version
+```
+
+Compare GPG fingerprints with the trusted backup. Follow the S/MIME checks in
+[Mail and account setup](mail-accounts.md); doctor does not prove certificate
+trust, private-key usability, or decryption. Remove the disposable signing test
+repository after inspecting its result.
+
+For clean-install confidence, complete the separate
+[disposable-Mac rehearsal](restore-rehearsal.md), including interrupted restore
+and repeated activation. Keep its logs and private evidence outside Git.
 
 ## Manual checks
 
-The automated block confirms declared S/MIME certificate/private-key pairs are
-present in the login keychain, but cannot prove certificate trust or Mail
-decryption. Verify:
+Verify the behavior of the restored applications and identities:
 
 - every installed Mail account can send and receive;
 - every S/MIME identity is in the login keychain, the current certificate is

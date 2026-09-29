@@ -1,0 +1,22 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+[[ $# -eq 1 && "$1" == /* && -x "$1" ]] || {
+  echo "usage: configure-otty-handlers <duti-executable>" >&2
+  exit 2
+}
+[[ "$(/usr/bin/id -u)" -ne 0 ]] || {
+  echo "Otty associations must be configured as the desktop user" >&2
+  exit 1
+}
+
+for content_type in public.shell-script public.unix-executable com.apple.terminal.shell-script; do
+  "$1" -s io.appmakes.otty "$content_type" all
+  [[ "$("$1" -d "$content_type")" == io.appmakes.otty ]] || {
+    echo "Otty association did not take effect for $content_type" >&2
+    exit 1
+  }
+done
+# URL schemes take no role argument. Keep failures visible to the operator.
+"$1" -s io.appmakes.otty ssh

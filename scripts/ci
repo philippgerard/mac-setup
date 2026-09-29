@@ -1,0 +1,20 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+# shellcheck source=scripts/trusted-nix
+source "$REPO_ROOT/scripts/trusted-nix"
+NIX_BIN="$(mac_setup_trusted_nix)"
+[[ "$(/usr/bin/uname -m)" == arm64 ]] || {
+  echo "CI requires Apple Silicon macOS" >&2
+  exit 1
+}
+unset MAC_SETUP_LOCAL_CONFIG
+"$REPO_ROOT/scripts/validate"
+source_path="$("$REPO_ROOT/scripts/flake-source")"
+# No local host metadata, 1Password session, App Store login, or activation.
+"$NIX_BIN" flake check --no-update-lock-file "$source_path"

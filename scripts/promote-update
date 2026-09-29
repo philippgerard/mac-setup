@@ -1,0 +1,84 @@
+#!/bin/bash -p
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+[[ $# -eq 2 ]] || { echo "usage: promote-update <baseline> <validated-candidate>" >&2; exit 2; }
+baseline="$1"
+candidate="$2"
+pins=(flake.lock modules/home/filen-menubar-release.json modules/home/oh-my-claudecode-release.json)
+
+safe_file() {
+  [[ -f "$1" && ! -L "$1" && -O "$1" ]]
+}
+for directory in "$REPO_ROOT/.local" "$REPO_ROOT/modules" "$REPO_ROOT/modules/home" "$baseline" "$candidate"; do
+  [[ -d "$directory" && ! -L "$directory" && -O "$directory" ]] || {
+    echo "update promotion directory is unsafe" >&2
+    exit 1
+  }
+done
+for pin in "${pins[@]}"; do
+  if ! { safe_file "$REPO_ROOT/$pin" && safe_file "$baseline/$pin" && safe_file "$candidate/$pin"; }; then
+    echo "update pin is missing or unsafe: $pin" >&2
+    exit 1
+  fi
+  /usr/bin/cmp -s "$REPO_ROOT/$pin" "$baseline/$pin" || {
+    echo "update pin changed before promotion: $pin" >&2
+    exit 1
+  }
+done
+
+# Three files cannot be renamed in one operation. Save originals and undo a
+# failed promotion only when doing so will not overwrite a concurrent edit.
+journal="$(/usr/bin/mktemp -d "$REPO_ROOT/.local/update-recovery.XXXXXX")"
+/bin/mkdir -p "$journal/original/modules/home" "$journal/candidate/modules/home"
+for pin in "${pins[@]}"; do
+  /bin/cp -p "$baseline/$pin" "$journal/original/$pin"
+  /bin/cp -p "$candidate/$pin" "$journal/candidate/$pin"
+done
+complete=0
+temporary_pin=""
+cleanup() {
+  local status="$?" pin recovery_failed=0
+  trap - EXIT INT TERM HUP
+  [[ -z "$temporary_pin" ]] || /bin/rm -f -- "$temporary_pin"
+  if [[ "$complete" -eq 0 ]]; then
+    for pin in "${pins[@]}"; do
+      if safe_file "$REPO_ROOT/$pin" && /usr/bin/cmp -s "$REPO_ROOT/$pin" "$journal/original/$pin"; then
+        continue
+      fi
+      if safe_file "$REPO_ROOT/$pin" && /usr/bin/cmp -s "$REPO_ROOT/$pin" "$journal/candidate/$pin"; then
+        if /bin/cp -p "$journal/original/$pin" "$REPO_ROOT/$pin"; then continue; fi
+      fi
+      recovery_failed=1
+    done
+  fi
+  if [[ "$recovery_failed" -eq 1 ]]; then
+    echo "Promotion could not be fully restored without replacing concurrent edits." >&2
+    echo "Review the saved originals and candidate in $journal" >&2
+  else
+    /bin/rm -rf -- "$journal"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+for pin in "${pins[@]}"; do
+  if ! { safe_file "$REPO_ROOT/$pin" && /usr/bin/cmp -s "$REPO_ROOT/$pin" "$journal/original/$pin"; }; then
+    echo "update pin changed during promotion: $pin" >&2
+    exit 1
+  fi
+  temporary_pin="$(/usr/bin/mktemp "$(/usr/bin/dirname "$REPO_ROOT/$pin")/.mac-setup-pin.XXXXXX")"
+  /bin/cp "$journal/candidate/$pin" "$temporary_pin"
+  /bin/chmod 644 "$temporary_pin"
+  if ! { safe_file "$REPO_ROOT/$pin" && /usr/bin/cmp -s "$REPO_ROOT/$pin" "$journal/original/$pin"; }; then
+    echo "update pin changed before replacement: $pin" >&2
+    exit 1
+  fi
+  /bin/mv "$temporary_pin" "$REPO_ROOT/$pin"
+  temporary_pin=""
+done
+complete=1
