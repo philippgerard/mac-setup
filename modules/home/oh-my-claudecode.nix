@@ -25,9 +25,18 @@ let
 
     # This package targets one Nix platform; upstream otherwise builds both
     # Darwin architectures using the host's Apple toolchain.
+    # The HUD branch element shows a short worktree badge (green ✓WT inside a
+    # linked worktree, grey WT outside one) in place of the full worktree name.
     postPatch = ''
       substituteInPlace scripts/build-contained-fs.mjs \
         --replace-fail "['arm64', 'x64']" "[process.arch]"
+      substituteInPlace src/hud/elements/git.ts \
+        --replace-fail \
+          ${lib.escapeShellArg "\${dim('(wt:')}\${cyan(wtInfo.worktreeName)}\${dim(')')}"} \
+          ${lib.escapeShellArg "\${green('✓WT')}"} \
+        --replace-fail \
+          ${lib.escapeShellArg "\${cyan(branch)}`;"} \
+          ${lib.escapeShellArg "\${cyan(branch)} \${dim('WT')}`;"}
     '';
 
     # The installed HUD resolves npm-style module roots at runtime. Exercise
