@@ -1,0 +1,64 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DOCTOR_SCRIPT="$REPO_ROOT/scripts/doctor"
+test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-doctor-test.XXXXXX")"
+trap '/bin/rm -rf -- "$test_dir"' EXIT
+
+extract_doctor_function() {
+  /usr/bin/awk -v function_start="$1() {" '
+    $0 == function_start { in_function = 1 }
+    in_function { print }
+    in_function && $0 == "}" { exit }
+  ' "$DOCTOR_SCRIPT"
+}
+
+# Homebrew lists installed casks and formulae by bare token, even when the
+# manifest declares a fully qualified tap name.
+/bin/mkdir "$test_dir/bin"
+cat >"$test_dir/bin/brew" <<'BREW'
+#!/bin/bash
+case "$*" in
+  "list --cask") printf '%s\n' beeper filen-menubar ;;
+  "list --formula") printf '%s\n' jq tap-tool ;;
+  *) exit 90 ;;
+esac
+BREW
+cat >"$test_dir/bin/mas" <<'MAS'
+#!/bin/bash
+[[ "$*" == list ]] || exit 90
+MAS
+/bin/chmod 700 "$test_dir/bin/brew" "$test_dir/bin/mas"
+
+write_manifest() {
+  printf '{"schema":1,"development":false,"filen":true,"casks":%s,"brews":%s,"masApps":{}}\n' \
+    "$1" "$2" >"$test_dir/manifest.json"
+}
+
+manifest_valid_function="$(extract_doctor_function manifest_valid)"
+applications_function="$(extract_doctor_function applications_ready)"
+(
+  # shellcheck disable=SC2034 # Used by the evaluated production functions.
+  manifest="$test_dir/manifest.json"
+  # shellcheck disable=SC2034 # Used by the evaluated production function.
+  homebrew_prefix="$test_dir"
+  eval "$manifest_valid_function"
+  eval "$applications_function"
+
+  write_manifest '["beeper","philippgerard/tap/filen-menubar"]' '["jq","example/tap/tap-tool"]'
+  applications_ready
+
+  write_manifest '["philippgerard/tap/missing-cask"]' '[]'
+  if applications_ready; then
+    echo "doctor accepted a missing qualified cask" >&2; exit 1
+  fi
+  write_manifest '[]' '["example/tap/missing-formula"]'
+  if applications_ready; then
+    echo "doctor accepted a missing qualified formula" >&2; exit 1
+  fi
+)
+
+echo "doctor receipt tests passed"

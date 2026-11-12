@@ -45,6 +45,7 @@ source "$REPO_ROOT/scripts/trusted-path"
 mac_setup_harden_environment
 command -v jq >/dev/null || { echo "jq is missing; activate the base configuration first" >&2; exit 1; }
 manifest="/run/current-system/etc/mac-setup/manifest.json"
+homebrew_prefix="/opt/homebrew"
 private_state="$HOME/Library/Application Support/mac-setup"
 failures=0
 passed=0
@@ -142,16 +143,16 @@ icloud_profile_ready() {
 }
 applications_ready() {
   manifest_valid || return 1
-  [[ -x /opt/homebrew/bin/brew && -x /opt/homebrew/bin/mas ]] || return 1
+  [[ -x "$homebrew_prefix/bin/brew" && -x "$homebrew_prefix/bin/mas" ]] || return 1
   local installed_casks installed_brews installed_mas name
-  installed_casks="$(HOMEBREW_NO_AUTO_UPDATE=1 /opt/homebrew/bin/brew list --cask)" || return 1
-  installed_brews="$(HOMEBREW_NO_AUTO_UPDATE=1 /opt/homebrew/bin/brew list --formula)" || return 1
-  installed_mas="$(/opt/homebrew/bin/mas list)" || return 1
+  installed_casks="$(HOMEBREW_NO_AUTO_UPDATE=1 "$homebrew_prefix/bin/brew" list --cask)" || return 1
+  installed_brews="$(HOMEBREW_NO_AUTO_UPDATE=1 "$homebrew_prefix/bin/brew" list --formula)" || return 1
+  installed_mas="$("$homebrew_prefix/bin/mas" list)" || return 1
   while IFS= read -r name; do
-    /usr/bin/grep -Fxq -- "$name" <<<"$installed_casks" || return 1
+    /usr/bin/grep -Fxq -- "${name##*/}" <<<"$installed_casks" || return 1
   done < <(jq -r '.casks[]' "$manifest")
   while IFS= read -r name; do
-    /usr/bin/grep -Fxq -- "$name" <<<"$installed_brews" || return 1
+    /usr/bin/grep -Fxq -- "${name##*/}" <<<"$installed_brews" || return 1
   done < <(jq -r '.brews[]' "$manifest")
   while IFS= read -r name; do
     /usr/bin/grep -Eq "^${name}[[:space:]]" <<<"$installed_mas" || return 1
