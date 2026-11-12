@@ -164,9 +164,7 @@ development_ready() {
   done
 }
 filen_app_ready() {
-  local app="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
-  [[ -d "$app" && ! -L "$app" && -x "$app/Contents/Helpers/filen-menubar-cli" ]] && \
-    /usr/bin/codesign --verify --deep --strict "$app"
+  "$REPO_ROOT/scripts/validate-filen-app"
 }
 
 check system "Generation metadata" "Build, review, and activate this version of mac-setup." manifest_valid
@@ -196,7 +194,7 @@ else
 fi
 if feature_enabled filen; then
   check filen "Private sync configuration" "Run scripts/restore-filen-menubar-from-1password." private_file "$HOME/Library/Application Support/filen-menubar/config.json"
-  check filen "Signed app and bundled backend" "Activate the personal profile and complete App Management approval." filen_app_ready
+  check filen "Signed app and bundled backend" "Complete the Homebrew migration, then validate the installed cask." filen_app_ready
   check filen "Login agent loaded" "Activate the personal profile, then open Filen Menubar." \
     /bin/launchctl print "gui/$(/usr/bin/id -u)/org.nix-community.home.filen-menubar"
 else

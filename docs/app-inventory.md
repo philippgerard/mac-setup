@@ -11,7 +11,7 @@ The `mini` host composes:
   compiler, Cargo, formatter, linter, and language server;
 - `desktop`: external-display support and desktop menu-bar behavior;
 - `personal`: communication, news, media, archive, document utilities, and
-  the pinned Filen Menubar application;
+  the Homebrew Filen Menubar application;
 - `work`: individual Microsoft Office apps, Teams, and Slack;
 - `gaming`: GeForce NOW.
 
@@ -38,10 +38,13 @@ the former `1password-cli` cask because activation cleanup is disabled; after
 confirming the Nix `op` works with desktop integration, review that cask for
 manual removal.
 
-Filen Menubar is the explicit exception to the Homebrew-first GUI policy: its
-Apple Silicon DMG is checksum-pinned in Nix because no stable cask exists. The
-reviewed maintenance workflow automatically refreshes that pin from the latest
-stable GitHub release and verifies the release-asset digest before building.
+Filen Menubar follows the Homebrew GUI policy through the personal profile's
+`philippgerard/tap/filen-menubar` cask. Only this cask is explicitly trusted;
+the tap is not blanket-trusted. Homebrew owns `/Applications/Filen Menubar.app`;
+Home Manager owns the stable launcher and controlled login agent. See the
+[one-time migration](maintenance.md#one-time-migration-from-the-nix-application)
+before switching an existing Nix installation. Release versions and checksums
+are maintained in the tap instead of mac-setup's isolated pin updater.
 The signed app bundle contains its patched sync backend and pinned Node runtime;
 no standalone Filen CLI, npm package, or system Node runtime is declared. The
 backend cannot self-update independently of the reviewed application release.

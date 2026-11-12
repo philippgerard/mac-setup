@@ -90,7 +90,7 @@ password, Microsoft 365, and migration details.
 - macOS defaults, Fish, Git/SSH policy, tmux, Otty, and editable Zed settings
 - the pinned CLI and development toolchain
 - GUI and Mac App Store applications from the configured profiles
-- Filen Menubar with its bundled patched sync backend and Node runtime
+- Homebrew-managed Filen Menubar with its bundled patched sync backend and Node runtime
 - private Git and GPG state, password-free Mail/DAV metadata, and Filen
   configuration from 1Password
 
@@ -116,7 +116,7 @@ scripts/rebuild preview
 # Build and activate local changes
 scripts/rebuild switch
 
-# Intentionally update pinned Nix inputs, Filen Menubar, and OMC, then build
+# Intentionally update pinned Nix inputs and OMC, then build
 scripts/update
 
 # Check installed state without restoring or changing it

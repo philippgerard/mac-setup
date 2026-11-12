@@ -109,6 +109,24 @@ extract_finish_function_with_nested_blocks() {
   ' "$FINISH_SCRIPT"
 }
 
+# Execute the setup validator boundary and preserve its failure status.
+validation_function="$(extract_finish_function validate_filen_app)"
+cat >"$test_dir/app-validator" <<'EOF'
+#!/bin/bash
+[[ $# == 0 ]] || exit 90
+exit "${FILEN_TEST_STATUS:-0}"
+EOF
+/bin/chmod 700 "$test_dir/app-validator"
+(
+  # shellcheck disable=SC2034 # Used by the evaluated production function.
+  FILEN_APP_VALIDATOR="$test_dir/app-validator"
+  eval "$validation_function"
+  validate_filen_app
+  if FILEN_TEST_STATUS=42 validate_filen_app; then
+    echo "finish-setup ignored failed installed-app validation" >&2; exit 1
+  fi
+)
+
 select_filen_state_function="$(
   extract_finish_function_with_nested_blocks select_filen_backend_state
 )"
@@ -415,8 +433,6 @@ fi
 grep -Fq 'validate_filen_app' "$FINISH_SCRIPT"
 grep -Fq 'secure_filen_backend_state' "$FINISH_SCRIPT"
 grep -Fq 'authenticate through its in-app Login flow' "$FINISH_SCRIPT"
-# shellcheck disable=SC2016 # Match literal production variable references.
-grep -Fq '"$FILEN_APP_VALIDATOR" "$FILEN_IMMUTABLE_APP" "$FILEN_APP"' "$FINISH_SCRIPT"
 
 # Activated profiles must win over inherited immutable Nix-shell tools, while
 # user-writable and Homebrew paths must be discarded entirely.
@@ -464,7 +480,7 @@ for private_script in \
   "$REPO_ROOT/scripts/restore-mail-accounts-from-1password" \
   "$REPO_ROOT/scripts/generate-mail-account-profiles" \
   "$REPO_ROOT/scripts/microsoft-native-passkey-readiness" \
-  "$REPO_ROOT/scripts/validate-filen-app-copy" \
+  "$REPO_ROOT/scripts/validate-filen-app" \
   "$REPO_ROOT/scripts/validate-mail-account-profile" \
   "$REPO_ROOT/scripts/validate-mail-accounts-config" \
   "$REPO_ROOT/scripts/verify-stream-sha256"; do

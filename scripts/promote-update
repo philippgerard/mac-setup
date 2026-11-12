@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 [[ $# -eq 2 ]] || { echo "usage: promote-update <baseline> <validated-candidate>" >&2; exit 2; }
 baseline="$1"
 candidate="$2"
-pins=(flake.lock modules/home/filen-menubar-release.json modules/home/oh-my-claudecode-release.json)
+pins=(flake.lock modules/home/oh-my-claudecode-release.json)
 
 safe_file() {
   [[ -f "$1" && ! -L "$1" && -O "$1" ]]
@@ -29,7 +29,7 @@ for pin in "${pins[@]}"; do
   }
 done
 
-# Three files cannot be renamed in one operation. Save originals and undo a
+# Two files cannot be renamed in one operation. Save originals and undo a
 # failed promotion only when doing so will not overwrite a concurrent edit.
 journal="$(/usr/bin/mktemp -d "$REPO_ROOT/.local/update-recovery.XXXXXX")"
 /bin/mkdir -p "$journal/original/modules/home" "$journal/candidate/modules/home"

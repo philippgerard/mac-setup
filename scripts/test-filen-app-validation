@@ -4,110 +4,108 @@ set -euo pipefail
 umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VALIDATOR="$REPO_ROOT/scripts/validate-filen-app-copy"
-FILEN_MODULE="$REPO_ROOT/modules/home/filen-menubar.nix"
+# shellcheck source=scripts/filen-app-validation
+source "$REPO_ROOT/scripts/filen-app-validation"
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-filen-app-test.XXXXXX")"
-cleanup() {
-  if [[ -n "${test_dir:-}" && -d "$test_dir" && ! -L "$test_dir" ]]; then
-    /bin/rm -rf -- "$test_dir" >/dev/null 2>&1 || true
+trap '/bin/chmod -R u+w "$test_dir"; /bin/rm -rf -- "$test_dir"' EXIT
+app="$test_dir/Filen Menubar.app"
+cask_root="$test_dir/Caskroom/filen-menubar"
+/bin/mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" \
+  "$app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring" \
+  "$app/Contents/Resources/licenses/filen-cli" "$cask_root/.metadata" "$cask_root/0.1.37"
+/usr/bin/plutil -create xml1 "$app/Contents/Info.plist"
+for pair in CFBundleIdentifier:io.filen.menubar CFBundleExecutable:filen-menubar \
+  CFBundleShortVersionString:0.1.37 CFBundleVersion:0.1.37 CFBundlePackageType:APPL; do
+  /usr/bin/plutil -insert "${pair%%:*}" -string "${pair#*:}" "$app/Contents/Info.plist"
+done
+for executable in Contents/MacOS/filen-menubar Contents/Helpers/filen-menubar-cli \
+  Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node; do
+  /bin/cp /usr/bin/true "$app/$executable"
+  /usr/bin/codesign --force --sign - "$app/$executable" >/dev/null 2>&1
+done
+printf 'console.log("fixture");\n' >"$app/Contents/Resources/filen-cli/filen-cli.cjs"
+for notice in AGPL-3.0.txt NODE-LICENSE.txt THIRD_PARTY_NOTICES.txt runtime.cdx.json; do
+  printf 'fixture\n' >"$app/Contents/Resources/licenses/filen-cli/$notice"
+done
+/usr/bin/codesign --force --sign - "$app" >/dev/null 2>&1
+/bin/ln -s "$app" "$cask_root/0.1.37/Filen Menubar.app"
+receipt="$cask_root/.metadata/INSTALL_RECEIPT.json"
+printf '%s\n' '{"source":{"tap":"philippgerard/tap","version":"0.1.37"},"arch":"arm64"}' >"$receipt"
+
+reject() {
+  if filen_validate_installation "$app" "$cask_root" >"$test_dir/output" 2>&1; then
+    echo "Filen validation accepted $1" >&2; exit 1
   fi
 }
-trap cleanup EXIT
 
-if /usr/bin/grep -Fq 'pkgs.filen-cli' "$FILEN_MODULE"; then
-  echo "Filen Menubar still declares the standalone Nix Filen CLI" >&2
-  exit 1
+# A cryptographically valid ad-hoc signature must not pass Developer ID checks.
+/usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1
+if filen_verify_signature "$app" io.filen.menubar; then
+  echo "ad-hoc signer passed the required Developer ID identity" >&2; exit 1
 fi
-if /usr/bin/grep -Fq 'home.file.".local/bin/filen"' "$FILEN_MODULE"; then
-  echo "Filen Menubar still installs a standalone Filen CLI launcher" >&2
-  exit 1
-fi
-/usr/bin/grep -Fq 'sync backend and Node runtime are contained inside' \
-  "$FILEN_MODULE"
+reject 'an ad-hoc signer'
 
-expected_app="$test_dir/expected/Filen Menubar.app"
-copied_app="$test_dir/copied/Filen Menubar.app"
-/bin/mkdir -p \
-  "$expected_app/Contents/MacOS" \
-  "$expected_app/Contents/Helpers" \
-  "$expected_app/Contents/Resources/filen-cli" \
-  "$expected_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring" \
-  "$expected_app/Contents/Resources/licenses/filen-cli" \
-  "$test_dir/copied"
-/usr/bin/plutil -create xml1 "$expected_app/Contents/Info.plist"
-/usr/bin/plutil -insert CFBundleIdentifier -string org.example.filen-menubar-test \
-  "$expected_app/Contents/Info.plist"
-/usr/bin/plutil -insert CFBundleExecutable -string filen-menubar \
-  "$expected_app/Contents/Info.plist"
-/usr/bin/plutil -insert CFBundleVersion -string 1 \
-  "$expected_app/Contents/Info.plist"
-/usr/bin/plutil -insert CFBundlePackageType -string APPL \
-  "$expected_app/Contents/Info.plist"
-/bin/cp /usr/bin/true "$expected_app/Contents/MacOS/filen-menubar"
-/bin/cp /usr/bin/true "$expected_app/Contents/Helpers/filen-menubar-cli"
-/bin/cp /usr/bin/true \
-  "$expected_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
-printf '%s\n' 'console.log("bundled backend fixture");' \
-  >"$expected_app/Contents/Resources/filen-cli/filen-cli.cjs"
-for runtime_notice in \
-  AGPL-3.0.txt \
-  NODE-LICENSE.txt \
-  THIRD_PARTY_NOTICES.txt; do
-  printf '%s\n' "bundled runtime fixture: $runtime_notice" \
-    >"$expected_app/Contents/Resources/licenses/filen-cli/$runtime_notice"
+# Isolate OS trust assessment for filesystem/receipt cases. Keep real codesign
+# seal verification so resource and executable tampering still fails.
+filen_verify_signature() {
+  printf '%s\n' "${2:-runtime}" >>"$test_dir/signatures"
+  /usr/bin/codesign --verify --deep --strict "$1" >/dev/null 2>&1
+}
+filen_verify_gatekeeper() { [[ ! -e "$test_dir/gatekeeper-reject" ]]; }
+filen_validate_installation "$app" "$cask_root"
+[[ "$(/usr/bin/grep -c '^runtime$' "$test_dir/signatures")" == 3 ]]
+[[ "$(/usr/bin/grep -c '^io.filen.menubar$' "$test_dir/signatures")" == 1 ]]
+/bin/cp -R "$app" "$test_dir/pristine.app"
+restore_app() {
+  /bin/rm -rf "$app"
+  /bin/cp -R "$test_dir/pristine.app" "$app"
+}
+
+/bin/chmod 777 "$app/Contents/Resources"
+reject 'a writable intermediate directory'
+restore_app
+/bin/mv "$app" "$test_dir/redirected.app"
+/bin/ln -s "$test_dir/redirected.app" "$app"
+reject 'a symlinked bundle'
+/bin/rm "$app"
+/bin/mv "$test_dir/redirected.app" "$app"
+for resource in Contents/MacOS/filen-menubar Contents/Resources/filen-cli/filen-cli.cjs \
+  Contents/Resources/licenses/filen-cli/THIRD_PARTY_NOTICES.txt; do
+  /bin/chmod u+w "$app/$resource"
+  printf 'altered\n' >>"$app/$resource"
+  reject 'tampered signed bytes'
+  restore_app
 done
-printf '%s\n' '{"bomFormat":"CycloneDX"}' \
-  >"$expected_app/Contents/Resources/licenses/filen-cli/runtime.cdx.json"
-/usr/bin/codesign --force --sign - \
-  "$expected_app/Contents/Helpers/filen-menubar-cli" >/dev/null 2>&1
-/usr/bin/codesign --force --sign - \
-  "$expected_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node" \
-  >/dev/null 2>&1
-/usr/bin/codesign --force --sign - "$expected_app" >/dev/null 2>&1
-/bin/cp -R "$expected_app" "$copied_app"
-
-"$VALIDATOR" "$expected_app" "$copied_app"
-
-/bin/mv "$copied_app" "$test_dir/copied/real-app"
-/bin/ln -s "$test_dir/copied/real-app" "$copied_app"
-if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
-  echo "Filen app validation accepted a symlinked copied bundle" >&2
-  exit 1
-fi
-/bin/unlink "$copied_app"
-/bin/mv "$test_dir/copied/real-app" "$copied_app"
-
-printf '# altered\n' >>"$copied_app/Contents/MacOS/filen-menubar"
-if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
-  echo "Filen app validation accepted an altered executable" >&2
-  exit 1
-fi
-
-/bin/rm -rf -- "$copied_app"
-/bin/cp -R "$expected_app" "$copied_app"
-printf '%s\n' 'console.log("altered backend");' \
-  >"$copied_app/Contents/Resources/filen-cli/filen-cli.cjs"
-if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
-  echo "Filen app validation accepted an altered bundled backend" >&2
-  exit 1
-fi
-
-/bin/rm -rf -- "$copied_app"
-/bin/cp -R "$expected_app" "$copied_app"
-printf '%s\n' 'altered runtime notices' \
-  >"$copied_app/Contents/Resources/licenses/filen-cli/THIRD_PARTY_NOTICES.txt"
-if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
-  echo "Filen app validation accepted altered bundled runtime notices" >&2
-  exit 1
-fi
-
-/bin/rm -rf -- "$copied_app"
-/bin/cp -R "$expected_app" "$copied_app"
-/bin/rm -f -- \
-  "$copied_app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
-if "$VALIDATOR" "$expected_app" "$copied_app" >/dev/null 2>&1; then
-  echo "Filen app validation accepted a missing native keyring addon" >&2
-  exit 1
-fi
-
-echo "Filen Menubar application validation tests passed"
+/bin/rm "$app/Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node"
+reject 'a missing keyring addon'
+restore_app
+/usr/bin/plutil -replace CFBundleIdentifier -string org.example.impostor "$app/Contents/Info.plist"
+/usr/bin/codesign --force --sign - "$app" >/dev/null 2>&1
+reject 'a different bundle identity'
+restore_app
+/usr/bin/plutil -replace CFBundleVersion -string 0.1.36 "$app/Contents/Info.plist"
+/usr/bin/codesign --force --sign - "$app" >/dev/null 2>&1
+reject 'inconsistent bundle versions'
+restore_app
+/usr/bin/touch "$test_dir/gatekeeper-reject"
+reject 'a rejected Gatekeeper assessment'
+/bin/rm "$test_dir/gatekeeper-reject"
+/bin/cp "$receipt" "$test_dir/receipt"
+for patch in '.source.tap = "someone/tap"' '.source.version = "0.1.36"' '.arch = "x86_64"'; do
+  jq "$patch" "$test_dir/receipt" >"$receipt"
+  reject 'a mismatched receipt'
+done
+/bin/cp "$test_dir/receipt" "$receipt"
+/bin/chmod 666 "$receipt"
+reject 'a writable receipt'
+/bin/chmod 600 "$receipt"
+/bin/mv "$receipt" "$test_dir/missing-receipt"
+reject 'an absent receipt'
+/bin/mv "$test_dir/missing-receipt" "$receipt"
+/bin/rm "$cask_root/0.1.37/Filen Menubar.app"
+/bin/ln -s "$test_dir/pristine.app" "$cask_root/0.1.37/Filen Menubar.app"
+reject 'a receipt linked to another application'
+/bin/rm "$cask_root/0.1.37/Filen Menubar.app"
+/bin/ln -s "$app" "$cask_root/0.1.37/Filen Menubar.app"
+filen_validate_installation "$app" "$cask_root"
+echo "Filen Homebrew receipt, identity, signed content, and permissions tests passed"

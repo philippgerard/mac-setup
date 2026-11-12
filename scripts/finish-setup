@@ -25,15 +25,12 @@ INTERNET_ACCOUNTS_URL="x-apple.systempreferences:com.apple.Internet-Accounts-Set
 ONEPASSWORD_ACCOUNT_VALUE="${MAC_SETUP_1PASSWORD_ACCOUNT:-}"
 VAULT_VALUE="${MAC_SETUP_1PASSWORD_VAULT:-$MAC_SETUP_1PASSWORD_VAULT_DEFAULT}"
 ONEPASSWORD_SSH_SOCKET="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-FILEN_APP="$HOME/Applications/Home Manager Apps/Filen Menubar.app"
-FILEN_APP_LAUNCHER="$HOME/.local/bin/filen-menubar"
-FILEN_APP_VALIDATOR="$REPO_ROOT/scripts/validate-filen-app-copy"
+FILEN_APP="/Applications/Filen Menubar.app"
+FILEN_APP_VALIDATOR="$REPO_ROOT/scripts/validate-filen-app"
 FILEN_MODERN_STATE_DIR="$HOME/Library/Application Support/filen-cli"
 FILEN_LEGACY_STATE_DIR="$HOME/.filen-cli"
 FILEN_STATE_DIR=""
 FILEN_CREDENTIAL_FILE=""
-FILEN_APP_TARGET=""
-FILEN_IMMUTABLE_APP=""
 
 # Do not let ambient 1Password sessions, service credentials, Connect settings,
 # or defaults redirect private setup data.
@@ -382,39 +379,7 @@ secure_filen_backend_state() {
 }
 
 validate_filen_app() {
-  local app_target_mode
-  local app_target_owner
-
-  [[ -L "$FILEN_APP_LAUNCHER" ]] || {
-    echo "the Home Manager Filen Menubar launcher is missing or is not a symlink" >&2
-    exit 1
-  }
-  FILEN_APP_TARGET="$(realpath "$FILEN_APP_LAUNCHER")" || {
-    echo "the Home Manager Filen Menubar launcher could not be resolved" >&2
-    exit 1
-  }
-  [[ "$FILEN_APP_TARGET" =~ ^/nix/store/[0-9a-z]{32}-filen-menubar-[^/]+/Applications/Filen\ Menubar\.app/Contents/MacOS/filen-menubar$ ]] || {
-    echo "the Filen Menubar launcher does not resolve to the pinned application" >&2
-    exit 1
-  }
-  [[ -f "$FILEN_APP_TARGET" && ! -L "$FILEN_APP_TARGET" && \
-    -x "$FILEN_APP_TARGET" ]] || {
-    echo "the immutable Filen Menubar executable is unavailable or unsafe" >&2
-    exit 1
-  }
-  app_target_owner="$(/usr/bin/stat -Lf '%Su' "$FILEN_APP_TARGET")"
-  app_target_mode="$(/usr/bin/stat -Lf '%Lp' "$FILEN_APP_TARGET")"
-  [[ "$app_target_owner" == "root" && "$app_target_mode" =~ ^[0-7]{3,4}$ ]] || {
-    echo "the immutable Filen Menubar executable has unsafe ownership or permissions" >&2
-    exit 1
-  }
-  (( (8#$app_target_mode & 8#22) == 0 )) || {
-    echo "the immutable Filen Menubar executable is writable outside its owner" >&2
-    exit 1
-  }
-
-  FILEN_IMMUTABLE_APP="${FILEN_APP_TARGET%/Contents/MacOS/filen-menubar}"
-  "$FILEN_APP_VALIDATOR" "$FILEN_IMMUTABLE_APP" "$FILEN_APP"
+  "$FILEN_APP_VALIDATOR"
 }
 
 ensure_profile() {
@@ -608,7 +573,7 @@ if [[ "$SKIP_FILEN" -eq 0 ]]; then
 
   "$REPO_ROOT/scripts/restore-filen-menubar-from-1password"
   secure_filen_backend_state
-  /usr/bin/open "$FILEN_IMMUTABLE_APP"
+  /usr/bin/open "$FILEN_APP"
   echo "If Filen Menubar shows Login, authenticate through its in-app Login flow."
 fi
 

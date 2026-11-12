@@ -57,8 +57,6 @@ mac_setup_safe_git "$candidate" add --all
 /bin/chmod 600 "$candidate/.local/config.json"
 
 echo "Preparing dependency updates in a private candidate checkout..."
-"$candidate/scripts/update-filen-menubar"
-mac_setup_safe_git "$candidate" add --all
 "$candidate/scripts/flake-source" --copy-to "$lock_source" >/dev/null
 (cd "$lock_source" && "$NIX_BIN" flake update)
 /bin/cp "$lock_source/flake.lock" "$candidate/flake.lock"
@@ -81,5 +79,5 @@ mac_setup_safe_git "$candidate" add --all
   exit 1
 }
 "$REPO_ROOT/scripts/promote-update" "$baseline" "$candidate"
-echo "The candidate passed validation and build. Review the three pin files before activation."
+echo "The candidate passed validation and build. Review the two pin files before activation."
 echo "If those files were already staged, restage the reviewed updates before rebuilding."

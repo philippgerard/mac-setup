@@ -1,0 +1,4 @@
+# Publication stays in draft until an operator reviews the live migration.
+providers:
+  github:
+    draft_pull_requests: true

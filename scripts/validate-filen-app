@@ -1,0 +1,12 @@
+#!/bin/bash -p
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# shellcheck source=scripts/trusted-path
+source "$REPO_ROOT/scripts/trusted-path"
+mac_setup_harden_environment
+[[ $# -eq 0 ]] || { echo "usage: scripts/validate-filen-app" >&2; exit 2; }
+# shellcheck source=scripts/filen-app-validation
+source "$REPO_ROOT/scripts/filen-app-validation"
+filen_validate_installation "/Applications/Filen Menubar.app" "/opt/homebrew/Caskroom/filen-menubar"

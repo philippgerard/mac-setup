@@ -81,7 +81,24 @@
         system = publicSystem.system;
         profile-composition =
           assert builtins.elem "oh-my-claudecode" (packageNames publicSystem);
-          assert builtins.elem "filen-menubar" (packageNames publicSystem);
+          assert !(builtins.elem "filen-menubar" (packageNames publicSystem));
+          assert !(builtins.elem "filen-cli" (packageNames publicSystem));
+          assert builtins.any (c: c.name == "philippgerard/tap/filen-menubar" && c.trusted)
+            publicSystem.config.homebrew.casks;
+          assert builtins.any (t: t.name == "philippgerard/tap" && !t.trusted)
+            publicSystem.config.homebrew.taps;
+          assert !(builtins.any (c: c.name == "philippgerard/tap/filen-menubar")
+            baseSystem.config.homebrew.casks);
+          assert (builtins.fromJSON publicSystem.config.environment.etc."mac-setup/manifest.json".text).filen;
+          assert !(builtins.fromJSON baseSystem.config.environment.etc."mac-setup/manifest.json".text).filen;
+          assert (nixpkgs.lib.filterAttrsRecursive (_: value: value != null)
+            publicSystem.config.home-manager.users.macuser.launchd.agents.filen-menubar.config) == {
+            Label = "org.nix-community.home.filen-menubar";
+            ProgramArguments = [ "/Applications/Filen Menubar.app/Contents/MacOS/filen-menubar" ];
+            ProcessType = "Interactive";
+            RunAtLoad = true;
+            KeepAlive = { Crashed = true; SuccessfulExit = false; };
+          };
           assert !(builtins.elem "oh-my-claudecode" (packageNames baseSystem));
           assert !(builtins.elem "filen-menubar" (packageNames baseSystem));
           assert !(builtins.elem "rustc" (packageNames baseSystem));

@@ -17,7 +17,7 @@ scripts/rebuild preview
 # Build and activate
 scripts/rebuild switch
 
-# Update flake.lock, Filen Menubar, and OMC pins, then build for review
+# Update flake.lock and OMC pins, then build for review
 scripts/update
 
 # Compare declared Homebrew/MAS state with the live Mac
@@ -38,7 +38,7 @@ declarations. This compares intended app selection, not vendor-managed GUI
 application versions. The same built output can be inspected again with
 `scripts/preview-system ./result` without repeating validation or the build.
 
-`scripts/update` prepares all three pin files in a temporary, filtered candidate
+`scripts/update` prepares both pin files in a temporary, filtered candidate
 checkout, then validates and builds it once. Only a successful candidate whose
 original checkout and host selectors remain unchanged is promoted. Failed
 downloads, hashing, or builds leave the working pins unchanged. Promotion saves
@@ -98,15 +98,12 @@ Fish's `rebuild`, `update`, `fishconf`, and `nixconf` use this private record.
 
 ## Release pin review
 
-`scripts/update` queries GitHub for Filen Menubar's latest published stable
-release. When a newer version exists, it requires the expected Apple Silicon
-DMG, verifies the downloaded bytes against GitHub's release-asset SHA-256
-digest, and atomically updates the tracked version and Nix hash. An unchanged
-version with different bytes is rejected rather than silently repinned.
+`scripts/update` refreshes Nix inputs and the OMC release in an isolated candidate,
+validates and builds it, then promotes only `flake.lock` and
+`modules/home/oh-my-claudecode-release.json`. Filen Menubar releases are maintained
+in the Homebrew tap; no duplicate version or digest pin lives in this repository.
 
-Review `flake.lock`, `modules/home/filen-menubar-release.json`,
-`modules/home/oh-my-claudecode-release.json`, and the package
-diff before every activation. Do not run
+Review those two pin files and the package diff before every activation. Do not run
 `brew bundle cleanup --force` or enable activation cleanup until
 `scripts/homebrew-dry-run` has been reviewed line by line. Omitted applications
 remain installed until they are removed deliberately.
@@ -189,25 +186,85 @@ it for tokens, private paths, and account identifiers.
 
 ## Filen
 
-Filen Menubar is installed from a checksum-pinned Apple Silicon release.
-`scripts/update` advances that pin to GitHub's latest stable release and builds
-it without activation so the version and hash change remain reviewable. Home
-Manager copies a real, Spotlight-searchable application bundle to
-`~/Applications/Home Manager Apps/Filen Menubar.app` and starts it at login.
+Filen Menubar is installed by `philippgerard/tap/filen-menubar` at
+`/Applications/Filen Menubar.app`. The personal profile declares the tap without
+blanket trust and explicitly trusts only that fully qualified cask. The pinned
+nix-darwin supports `homebrew.casks[].trusted`; Homebrew 7 consumes the generated
+`trusted: true` cask option before loading it. No global trust exemption is used.
+The cask selects a checksum-verified, signed and notarized Apple Silicon release
+for macOS 13.5 or newer. Nix builds do not install or validate the remote cask.
 
-The signed application bundle contains the patched sync backend and its pinned
-Node runtime. mac-setup does not install `pkgs.filen-cli`, a system Node
-runtime, or a separate `filen` command. The backend cannot self-update; it is
-updated only when the checksum-pinned Filen Menubar release changes. The app
-copy validator also verifies the bundled Node helper, native keyring addon,
-runtime SBOM, and license notices against the pinned application.
+Home Manager retains the `org.nix-community.home.filen-menubar` login agent and
+`~/.local/bin/filen-menubar` command, both targeting the Homebrew bundle. The agent
+restarts crashes and unsuccessful exits; a successful Quit stays stopped.
+Homebrew does not own a second login item. Activation leaves Homebrew updates,
+upgrades and cleanup disabled. Review tap changes and use an explicit
+`brew upgrade --cask philippgerard/tap/filen-menubar` for subsequent releases.
+Quit the app and unload its controlled agent before upgrading; reload the agent
+after `scripts/validate-filen-app` succeeds. Do not enable the app's own login item.
 
-After activating this migration, verify that Home Manager removed the former
-managed launcher:
+The signed application contains its patched sync backend and Node runtime;
+there is no separate Filen CLI or system Node dependency. `finish-setup` and
+`doctor` share `scripts/validate-filen-app`. This read-only validator checks
+Developer ID team `7WS855G6D3`, bundle identifier `io.filen.menubar`, the main
+binary, Node helper, native keyring addon, signed resources, runtime SBOM and
+licenses, ownership and permissions throughout the bundle, and Gatekeeper.
+It also requires an arm64 receipt from `philippgerard/tap` matching both bundle
+versions and the Caskroom link to the actual installed app. A receipt alone or
+an arbitrary valid signature is insufficient. It reads local metadata without
+executing Homebrew or tap code. Offline Gatekeeper assessment failures remain
+failures to investigate, not permission to skip validation.
 
-```bash
-test ! -e "$HOME/.local/bin/filen"
-```
+### One-time migration from the Nix application
+
+Do this only in a separately authorized live maintenance session, after the tap
+is published and local validation, build and preview pass. Building this change
+performs none of these steps. Do not use Homebrew's `--force`, `--adopt` or `zap`
+to take over the existing app.
+
+1. Record the current system generation and launch-agent plist for rollback.
+   Quit Filen Menubar, unload `org.nix-community.home.filen-menubar` with
+   `launchctl bootout gui/$(id -u)/org.nix-community.home.filen-menubar`, and verify
+   both `filen-menubar` and `filen-menubar-cli` have exited. Do not replace a
+   running bundle. A missing agent is harmless only after confirming it is
+   already unloaded.
+2. Confirm no Filen Homebrew receipt exists. If it already exists, validate the
+   installation first and investigate any conflict instead of moving its app.
+   Inspect both `/Applications/Filen Menubar.app` and
+   `~/Applications/Home Manager Apps/Filen Menubar.app`: they must be real owned
+   directories with the expected Developer ID and bundle ID. Reject symlinks
+   or unexpected apps. Record their versions and signature checks.
+3. Create a unique private backup directory outside both application directories,
+   for example with `umask 077` and
+   `mktemp -d "$HOME/Library/Application Support/mac-setup/filen-migration.XXXXXX"`
+   (create the owned parent if needed). Copy both bundles with `ditto` to distinct
+   backup names, verify each backup with `codesign --verify --deep --strict`,
+   and compare each original and backup recursively with `diff -qr` before
+   moving either original. Save the old agent plist and generation reference
+   there too. Move each old app into that same backup directory under distinct
+   `.disabled` names; never delete it. Retain both verified backups until the
+   new installation has synced successfully. This avoids cask installation
+   conflicts and Home Manager removing the only fallback copy.
+4. Activate the reviewed configuration. Homebrew now installs the cask into the
+   vacant `/Applications` path; Home Manager updates its wrapper and agent and
+   stops managing the old Filen package. If Homebrew installation fails, stop
+   and inspect the partially activated state before retrying.
+5. Run `scripts/validate-filen-app` and `scripts/doctor --only filen --json`.
+   Verify the loaded agent's executable and PID use `/Applications`, the helper
+   comes from the same bundle, and existing sync pairs and login still work.
+   If necessary, bootstrap the newly generated agent plist after validation.
+
+Do not run `finish-setup` to migrate an existing installation: it restores
+configuration from 1Password and is intended for provisioning. Leave
+`~/Library/Application Support/filen-menubar`, `~/.filen-cli`,
+`~/Library/Application Support/filen-cli`, and Keychain items untouched. No
+credential export, deletion or reauthentication is part of this migration.
+
+For rollback, quit and unload the new agent, preserve the new bundle and
+Homebrew receipt for diagnosis, then deliberately uninstall only the cask
+without `--zap`. Restore the saved old app copies and previous system generation
+and agent. A Nix generation rollback alone does not undo Homebrew ownership;
+reconcile it explicitly and verify the restored agent before resuming sync.
 
 A separately installed npm-global `@filen/cli` may remain elsewhere in `PATH`,
 but Filen Menubar neither discovers nor requires it. Remove it only after

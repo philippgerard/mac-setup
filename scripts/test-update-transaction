@@ -9,7 +9,7 @@ trap '/bin/chmod -R u+w "$test_root"; /bin/rm -rf -- "$test_root"' EXIT
 fixture="$test_root/repository"
 baseline="$test_root/baseline"
 candidate="$test_root/candidate"
-pins=(flake.lock modules/home/filen-menubar-release.json modules/home/oh-my-claudecode-release.json)
+pins=(flake.lock modules/home/oh-my-claudecode-release.json)
 for directory in "$fixture" "$baseline" "$candidate"; do
   /bin/mkdir -p "$directory/modules/home"
 done
@@ -42,7 +42,7 @@ if "$fixture/scripts/promote-update" "$baseline" "$candidate" >"$test_root/error
   echo "promotion accepted a concurrent edit" >&2; exit 1
 fi
 /usr/bin/grep -Fxq 'concurrent edit' "$fixture/flake.lock"
-/usr/bin/cmp "$baseline/modules/home/filen-menubar-release.json" "$fixture/modules/home/filen-menubar-release.json"
+/usr/bin/cmp "$baseline/modules/home/oh-my-claudecode-release.json" "$fixture/modules/home/oh-my-claudecode-release.json"
 
 # A failing updater must never reach promotion, and only the candidate may change.
 workflow="$test_root/workflow"
@@ -71,12 +71,6 @@ while IFS= read -r path; do
   /bin/mkdir -p "$(dirname "$2/$path")"
   /bin/cp -p "$root/$path" "$2/$path"
 done < <(/usr/bin/git -C "$root" ls-files)
-EOF
-cat >"$workflow/scripts/update-filen-menubar" <<'EOF'
-#!/bin/bash
-root="$(cd "$(dirname "$0")/.." && pwd)"
-printf 'new\n' >"$root/modules/home/filen-menubar-release.json"
-[[ "$UPDATE_TEST_STAGE" != filen ]]
 EOF
 cat >"$workflow/scripts/update-oh-my-claudecode" <<'EOF'
 #!/bin/bash
@@ -126,7 +120,7 @@ fixture_domain=example.invalid
 export UPDATE_TEST_NIX="$test_root/nix"
 export UPDATE_TEST_TRACE="$test_root/builds"
 export UPDATE_TEST_ORIGINAL="$workflow"
-for UPDATE_TEST_STAGE in filen nix omc build concurrent concurrent-mode; do
+for UPDATE_TEST_STAGE in nix omc build concurrent concurrent-mode; do
   export UPDATE_TEST_STAGE
   : >"$UPDATE_TEST_TRACE"
   if "$workflow/scripts/update" >"$test_root/error" 2>&1; then

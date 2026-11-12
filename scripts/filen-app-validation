@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# Shared read-only checks. The executable entry point fixes the installation
+# paths; these functions also accept isolated fixtures for behavioral tests.
+filen_safe_path() {
+  local path="$1" mode owner
+  [[ -e "$path" && ! -L "$path" ]] || return 1
+  owner="$(/usr/bin/stat -f '%u' "$path")" || return 1
+  mode="$(/usr/bin/stat -f '%Lp' "$path")" || return 1
+  [[ "$owner" == 0 || "$owner" == "$(/usr/bin/id -u)" ]] || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 8#6022) == 0 ))
+}
+
+filen_verify_signature() {
+  local path="$1" identifier="${2:-}" requirement
+  requirement='anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "7WS855G6D3"'
+  if [[ -n "$identifier" ]]; then
+    requirement="$requirement and identifier \"$identifier\""
+  fi
+  /usr/bin/codesign --verify --deep --strict --test-requirement "=$requirement" "$path" >/dev/null 2>&1
+}
+
+filen_verify_gatekeeper() {
+  /usr/sbin/spctl --assess --type execute "$1" >/dev/null 2>&1
+}
+
+filen_validate_bundle() {
+  local app="$1" path relative version build
+  { [[ -d "$app" ]] && filen_safe_path "$app"; } || {
+    echo "Filen Menubar must be an owned, protected directory, not a symlink" >&2
+    return 1
+  }
+  # Check every component, including resource directories. No path inside this
+  # self-contained Tauri bundle needs to redirect outside the signed bundle.
+  while IFS= read -r -d '' path; do
+    if ! { [[ -f "$path" || -d "$path" ]] && filen_safe_path "$path"; }; then
+      echo "Filen Menubar contains unsafe ownership, permissions, or a link" >&2
+      return 1
+    fi
+  done < <(/usr/bin/find "$app" -mindepth 1 -print0)
+  for relative in \
+    Contents/Info.plist \
+    Contents/MacOS/filen-menubar \
+    Contents/Helpers/filen-menubar-cli \
+    Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node \
+    Contents/Resources/filen-cli/filen-cli.cjs \
+    Contents/Resources/licenses/filen-cli/AGPL-3.0.txt \
+    Contents/Resources/licenses/filen-cli/NODE-LICENSE.txt \
+    Contents/Resources/licenses/filen-cli/THIRD_PARTY_NOTICES.txt \
+    Contents/Resources/licenses/filen-cli/runtime.cdx.json; do
+    [[ -f "$app/$relative" && -s "$app/$relative" ]] || {
+      echo "Filen Menubar is missing $relative" >&2; return 1
+    }
+  done
+  for relative in \
+    Contents/MacOS/filen-menubar \
+    Contents/Helpers/filen-menubar-cli \
+    Contents/Resources/filen-cli/node_modules/@jupiterpi/node-keyring/node-keyring.darwin-arm64.node; do
+    [[ -x "$app/$relative" ]] || {
+      echo "Filen Menubar has a non-executable runtime component" >&2; return 1
+    }
+    filen_verify_signature "$app/$relative" || {
+      echo "Filen Menubar runtime signature or signing identity is invalid" >&2; return 1
+    }
+  done
+  [[ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" == io.filen.menubar && \
+    "$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")" == filen-menubar ]] || {
+    echo "Filen Menubar bundle identity is invalid" >&2; return 1
+  }
+  version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")" || return 1
+  build="$(/usr/bin/plutil -extract CFBundleVersion raw -o - "$app/Contents/Info.plist")" || return 1
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$build" == "$version" ]] || {
+    echo "Filen Menubar bundle versions are invalid or inconsistent" >&2; return 1
+  }
+  filen_verify_signature "$app" io.filen.menubar || {
+    echo "Filen Menubar signature or expected Developer ID identity is invalid" >&2; return 1
+  }
+  filen_verify_gatekeeper "$app" || {
+    echo "Filen Menubar did not pass Gatekeeper assessment" >&2; return 1
+  }
+}
+
+filen_validate_installation() {
+  local app="$1" cask_root="$2" version receipt linked_app path
+  filen_validate_bundle "$app" || return 1
+  version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")" || return 1
+  receipt="$cask_root/.metadata/INSTALL_RECEIPT.json"
+  for path in "$cask_root" "$cask_root/.metadata" "$cask_root/$version"; do
+    { [[ -d "$path" ]] && filen_safe_path "$path"; } || {
+      echo "Filen Menubar Homebrew metadata directory is missing or unsafe" >&2; return 1
+    }
+  done
+  { [[ -f "$receipt" ]] && filen_safe_path "$receipt"; } || {
+    echo "Filen Menubar Homebrew receipt is missing or unsafe" >&2; return 1
+  }
+  # Read the receipt directly: diagnostics must neither execute tap code nor
+  # contact GitHub or mutate Homebrew's trust store.
+  jq -e --arg version "$version" '
+    .source.tap == "philippgerard/tap" and
+    .source.version == $version and .arch == "arm64"
+  ' "$receipt" >/dev/null || {
+    echo "Filen Menubar receipt does not match the tap, architecture, or installed version" >&2; return 1
+  }
+  linked_app="$cask_root/$version/Filen Menubar.app"
+  [[ -L "$linked_app" && "$(/usr/bin/readlink "$linked_app")" == "$app" ]] || {
+    echo "Filen Menubar is not linked from its Homebrew cask installation" >&2; return 1
+  }
+}
