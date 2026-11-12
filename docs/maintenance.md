@@ -249,7 +249,10 @@ to take over the existing app.
    backup names, verify each backup with `codesign --verify --deep --strict`,
    and compare each original and backup recursively with `diff -qr` before
    moving either original. Save the old agent plist and generation reference
-   there too. Move each old app into that same backup directory under distinct
+   there too. Run `chmod u+w` on each old app's top-level directory only;
+   the Nix-copied bundle is mode 0555, and moving a directory to a new parent
+   needs owner write permission. Mode bits are outside the code signature.
+   Move each old app into that same backup directory under distinct
    `.disabled` names; never delete it. Retain both verified backups until the
    new installation has synced successfully. This avoids cask installation
    conflicts and Home Manager removing the only fallback copy.
