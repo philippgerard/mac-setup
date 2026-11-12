@@ -245,14 +245,23 @@ to take over the existing app.
    `.disabled` names; never delete it. Retain both verified backups until the
    new installation has synced successfully. This avoids cask installation
    conflicts and Home Manager removing the only fallback copy.
-4. Activate the reviewed configuration. Homebrew now installs the cask into the
-   vacant `/Applications` path; Home Manager updates its wrapper and agent and
-   stops managing the old Filen package. If Homebrew installation fails, stop
-   and inspect the partially activated state before retrying.
-5. Run `scripts/validate-filen-app` and `scripts/doctor --only filen --json`.
-   Verify the loaded agent's executable and PID use `/Applications`, the helper
-   comes from the same bundle, and existing sync pairs and login still work.
-   If necessary, bootstrap the newly generated agent plist after validation.
+4. Install the cask into the vacant `/Applications` path before activation,
+   because activation reloads the changed agent and starts the app immediately.
+   Run `brew tap philippgerard/tap`, then
+   `brew trust --cask philippgerard/tap/filen-menubar`, then
+   `HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask philippgerard/tap/filen-menubar`.
+   Do not trust the whole tap. Do not open the app.
+5. Run `scripts/validate-filen-app`. If it fails, do not activate; follow the
+   rollback below.
+6. Activate the reviewed configuration. Homebrew finds the validated cask
+   already installed; Home Manager updates its wrapper and agent, stops
+   managing the old Filen package, and starts the agent from `/Applications`.
+   If activation fails, stop and inspect the partially activated state before
+   retrying.
+7. Run `scripts/validate-filen-app` and `scripts/doctor --only filen --json`
+   again. Verify the loaded agent's executable and PID use `/Applications`, the
+   helper comes from the same bundle, and existing sync pairs and login still
+   work.
 
 Do not run `finish-setup` to migrate an existing installation: it restores
 configuration from 1Password and is intended for provisioning. Leave
@@ -262,9 +271,11 @@ credential export, deletion or reauthentication is part of this migration.
 
 For rollback, quit and unload the new agent, preserve the new bundle and
 Homebrew receipt for diagnosis, then deliberately uninstall only the cask
-without `--zap`. Restore the saved old app copies and previous system generation
-and agent. A Nix generation rollback alone does not undo Homebrew ownership;
-reconcile it explicitly and verify the restored agent before resuming sync.
+without `--zap` and run `brew untrust --cask philippgerard/tap/filen-menubar`.
+Restore the saved old app copies and agent, plus the previous system generation
+if activation ran. A Nix generation rollback alone does not undo Homebrew
+ownership; reconcile it explicitly and verify the restored agent before resuming
+sync.
 
 A separately installed npm-global `@filen/cli` may remain elsewhere in `PATH`,
 but Filen Menubar neither discovers nor requires it. Remove it only after
