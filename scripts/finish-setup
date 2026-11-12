@@ -241,12 +241,6 @@ if [[ "$NEEDS_1PASSWORD" -eq 1 ]]; then
     exit 1
   }
 fi
-if [[ "$SKIP_FILEN" -eq 0 ]]; then
-  command -v realpath >/dev/null 2>&1 || {
-    echo "required command not found after activation: realpath" >&2
-    exit 1
-  }
-fi
 
 pause_for_user() {
   local prompt="$1"

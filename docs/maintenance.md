@@ -197,11 +197,19 @@ for macOS 13.5 or newer. Nix builds do not install or validate the remote cask.
 Home Manager retains the `org.nix-community.home.filen-menubar` login agent and
 `~/.local/bin/filen-menubar` command, both targeting the Homebrew bundle. The agent
 restarts crashes and unsuccessful exits; a successful Quit stays stopped.
-Homebrew does not own a second login item. Activation leaves Homebrew updates,
-upgrades and cleanup disabled. Review tap changes and use an explicit
-`brew upgrade --cask philippgerard/tap/filen-menubar` for subsequent releases.
-Quit the app and unload its controlled agent before upgrading; reload the agent
-after `scripts/validate-filen-app` succeeds. Do not enable the app's own login item.
+Homebrew does not own a second login item. Do not enable the app's own login
+item. Activation leaves Homebrew updates, upgrades and cleanup disabled.
+
+Later releases arrive through ordinary Homebrew upgrades, including `topgrade`
+and `brew upgrade --cask`. Before publishing a cask update, the tap's release CI
+checks the DMG digest, installation, signature and Gatekeeper assessment.
+Homebrew first runs the cask's `uninstall quit: "io.filen.menubar"`. A successful
+quit leaves the agent stopped, and Homebrew reopens the app with `open -b` after
+the upgrade. That reopened process runs outside the agent until the next login.
+If the app does not quit within 10 seconds, or no GUI session exists, Homebrew
+warns and replaces the bundle anyway. For a controlled upgrade, quit the app and
+unload its agent, run `brew upgrade --cask philippgerard/tap/filen-menubar`,
+run `scripts/validate-filen-app`, then bootstrap the agent again.
 
 The signed application contains its patched sync backend and Node runtime;
 there is no separate Filen CLI or system Node dependency. `finish-setup` and
