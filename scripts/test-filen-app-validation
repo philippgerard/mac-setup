@@ -8,6 +8,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/filen-app-validation"
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mac-setup-filen-app-test.XXXXXX")"
 trap '/bin/chmod -R u+w "$test_dir"; /bin/rm -rf -- "$test_dir"' EXIT
+# /tmp children inherit group wheel; macOS refuses g+s for non-member groups.
+/usr/bin/chgrp "$(/usr/bin/id -g)" "$test_dir"
 app="$test_dir/Filen Menubar.app"
 cask_root="$test_dir/Caskroom/filen-menubar"
 /bin/mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" \
