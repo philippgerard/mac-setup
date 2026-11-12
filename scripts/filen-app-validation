@@ -6,7 +6,7 @@ filen_safe_path() {
   local path="$1" mode owner
   [[ -e "$path" && ! -L "$path" ]] || return 1
   owner="$(/usr/bin/stat -f '%u' "$path")" || return 1
-  mode="$(/usr/bin/stat -f '%Lp' "$path")" || return 1
+  mode="$(/usr/bin/stat -f '%Mp%Lp' "$path")" || return 1
   [[ "$owner" == 0 || "$owner" == "$(/usr/bin/id -u)" ]] || return 1
   [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
   (( (8#$mode & 8#6022) == 0 ))

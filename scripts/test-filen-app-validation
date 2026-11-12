@@ -64,6 +64,12 @@ restore_app() {
 /bin/chmod 777 "$app/Contents/Resources"
 reject 'a writable intermediate directory'
 restore_app
+/bin/chmod u+s "$app/Contents/Helpers/filen-menubar-cli"
+reject 'a setuid helper'
+restore_app
+/bin/chmod g+s "$app/Contents/Resources"
+reject 'a setgid directory'
+restore_app
 /bin/mv "$app" "$test_dir/redirected.app"
 /bin/ln -s "$test_dir/redirected.app" "$app"
 reject 'a symlinked bundle'
